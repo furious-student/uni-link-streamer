@@ -1,26 +1,38 @@
-from typing import Union, List
+from typing import Union, List, Optional
 import socket
 
-from node import Node
+from node_type import parse_header, create_header
+from receiver import Receiver
+from sender import Sender
 
 
 def main():
-    # host_name = socket.gethostname()
-    # host_ip = socket.gethostbyname(host_name)
+    node_type = input("Input node type (sender|receiver): ")
+    node: Union[Optional["Sender"], Optional["Receiver"]]
+    if node_type == "sender":
+        ip = input("IP: ")
+        port = input("Port: ")
+        node = Sender(dst_ip=ip, dst_port=int(port))
+        node.start()
+    elif node_type == "receiver":
+        ip = input("IP: ")
+        port = input("Port: ")
+        node = Receiver(src_ip=ip, src_port=int(port))
+        node.start()
 
-    role = input("Role (sender|receiver): ")
-    node = Node(role=role)  # type: ignore
 
-    src_ip: str = input("Source port: ")
-    src_port = try_to_int(src_ip)
-    node.set_src_address(port=src_port)
 
-    dst: List[str] = input("Destination ip and port separated with semicolon (ip:port): ").split(":")
-    dst_ip = try_to_int(dst[0])
-    dst_port = try_to_int(dst[1])
-    node.set_dst_address(ip=dst_ip, port=dst_port)
-
-    node.start()
+    # flag = 15
+    # seq_num = 268_000_000
+    # crc = 5
+    # print(f"Original input values: flag={flag}, seq_num={seq_num}, crc={crc}")
+    #
+    # bts = create_header(flag=flag, seq_num=seq_num, crc=crc)
+    # print(f"In-byte values: flag={bts.hex()[:1]}, seq_num={bts.hex()[1:6]}, crc={bts.hex()[6:]}")
+    # print(f"Bytes: {len(bts)}")
+    #
+    # header = parse_header(header=bts)
+    # print(f"Parsed byte values: flag={header[0]}, seq_num={header[1]}, crc={header[2]}")
 
 
 def try_to_int(value_to_int: str) -> Union[str, int]:
@@ -30,6 +42,13 @@ def try_to_int(value_to_int: str) -> Union[str, int]:
     except ValueError:
         output = original_src_ip
     return output
+
+
+def prettify_hex(hex_str: str) -> str:
+    return_str = ""
+    for byte in range(0, len(hex_str), 2):
+        return_str += str(byte) + " "
+    return return_str
 
 
 if __name__ == '__main__':

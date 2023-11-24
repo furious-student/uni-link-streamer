@@ -1,9 +1,22 @@
 import socket
 import threading
 import time
-import requests
+# import requests
 
 from typing import Literal, Union, Any, Tuple
+
+
+# def get_public_ip():
+#     try:
+#         # Use a service that echoes the public IP address
+#         response = requests.get('https://api64.ipify.org?format=json')
+#         if response.status_code == 200:
+#             data = response.json()
+#             return data['ip']
+#         else:
+#             return "Unable to retrieve public IP"
+#     except Exception as e:
+#         return f"Error: {e}"
 
 
 class Node:
@@ -26,7 +39,8 @@ class Node:
             try:
                 src_ip = socket.gethostbyname(socket.gethostname())
             except socket.gaierror:
-                src_ip = self.get_public_ip()
+                src_ip = "127.0.0.1"
+                # src_ip = get_public_ip()
             self.__src_address = (src_ip, port)
         print(f">> Node's ip address set to {self.__src_address[0]}, port no. {self.__src_address[1]}")
 
@@ -91,16 +105,4 @@ class Node:
         # message to bytes -> fragments -> send one fragment and listen for ack
         self.send_message(message=message)
         self.listen()
-
-    def get_public_ip(self):
-        try:
-            # Use a service that echoes the public IP address
-            response = requests.get('https://api64.ipify.org?format=json')
-            if response.status_code == 200:
-                data = response.json()
-                return data['ip']
-            else:
-                return "Unable to retrieve public IP"
-        except Exception as e:
-            return f"Error: {e}"
 
