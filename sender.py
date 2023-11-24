@@ -5,10 +5,6 @@ from typing import Dict
 from node_type import *
 
 
-def add_header(header: bytes, payload: bytes) -> bytes:
-    return header + payload
-
-
 def message_to_bytes(message: str) -> bytes:
     return message.encode(encoding="utf-8")
 
@@ -43,36 +39,38 @@ class Sender(NodeType, ABC):
         fragments = [data[i*self.__frag_size:(i+1)*self.__frag_size] for i in range(frag_num)]
         return fragments
 
-    def map_fragments(self, fragments: List[bytes]) -> None:
-        for seq_num, frag in enumerate(fragments):
+    def map_packets(self, packets: List[bytes]) -> None:
+        for seq_num, frag in enumerate(packets):
             self.__curr_message_status.update({seq_num: False})
 
-    def create_data_packets(self, data: bytes) -> List[bytes]:
+    def create_data_packets(self, data: bytes, init_seq_num: int) -> List[bytes]:
         flag = 2  # flag 2 = DATA
         data_fragments = self.fragment_data(data=data)
-        self.map_fragments(data_fragments)
         packets = list()
-        for seq_num, frag in enumerate(data_fragments):
-            crc = calc_crc(frag)
-            header = create_header(flag=flag, seq_num=seq_num, crc=crc)
-            packet = add_header(header=header, payload=frag)
+        for frag in data_fragments:
+            packet = create_packet(flag=flag, seq_num=init_seq_num, payload=frag)
             packets.append(packet)
+            init_seq_num += 1
         return packets
 
     def send_packet(self, packet: bytes) -> None:
         self.get_socket().sendto(packet, self.get_dst_address())
 
     def send_all_packets(self, packets: List[bytes]) -> None:
+        self.map_packets(packets=packets)
         for pkt in packets:
             self.send_packet(pkt)
 
-    def send_file_data(self) -> None:
-        seq_num = 0
-        pass
+    def send_file_data(self, path) -> None:
+        b_file = file_input(file_name=path)
+        b_file_name = message_to_bytes(path)
+        first_packet = create_packet(flag=1, seq_num=0, payload=b_file_name)
+        packets = [first_packet] + self.create_data_packets(data=b_file, init_seq_num=1)
+        self.send_all_packets(packets=packets)
 
     def listen_input(self) -> None:
         input_message = text_input()
-        # if sending is in process, display error
+        # if sending is in process, display error <>
         command = is_command(input_message)
         if command[0]:
             cmd = command[1]
@@ -80,18 +78,18 @@ class Sender(NodeType, ABC):
             self.handle_cmd(cmd=cmd, arg=args[0])
         else:
             b_message = message_to_bytes(input_message)
-            data_packets = self.create_data_packets(data=b_message)
+            data_packets = self.create_data_packets(data=b_message, init_seq_num=0)
             self.send_all_packets(data_packets)
 
     def handle_cmd(self, cmd: str, arg: str) -> None:
         if cmd == "file!":
-            b_file = file_input(file_name=arg)
+            self.send_file_data(path=arg)
         elif cmd == "switch!":
             pass
         elif cmd == "end!":
             pass
         elif cmd == "f_size!":
-            pass
+            self.__frag_size = int(arg)
 
     def listen(self):
         my_socket: socket = self.get_socket()

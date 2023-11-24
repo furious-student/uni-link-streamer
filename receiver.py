@@ -54,7 +54,8 @@ class Receiver(NodeType, ABC):
             if flag == 0:
                 pass  # syn
             elif flag == 1:
-                pass  # f_data
+                # f_data
+                print(f">> frag: {seq_num} | f_data: {data}")
             elif flag == 2:
                 # data
                 print(f">> frag: {seq_num} | data: {data}")

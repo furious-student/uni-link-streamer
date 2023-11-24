@@ -43,6 +43,17 @@ def create_header(flag: int, seq_num: int, crc: int) -> bytes:
     return header
 
 
+def add_header(header: bytes, payload: bytes) -> bytes:
+    return header + payload
+
+
+def create_packet(flag: int, seq_num: int, payload: bytes) -> bytes:
+    crc = calc_crc(payload)
+    header = create_header(flag=flag, seq_num=seq_num, crc=crc)
+    packet = add_header(header=header, payload=payload)
+    return packet
+
+
 def calc_crc(fragment_data: bytes) -> int:
     return ccitt_false(fragment_data)
 
@@ -56,7 +67,7 @@ def is_command(input_message: str) -> Tuple[bool, str, List[str]]:
     first_word = words[0]
     other_words = words[1:]
     # if the last character of the first word is exclamation mark, the command, other words (arguments)
-    return first_word == "!", first_word, other_words
+    return first_word[-1] == "!", first_word, other_words
 
 
 def text_input() -> str:
