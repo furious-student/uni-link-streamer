@@ -20,8 +20,6 @@ def main():
         node = Receiver(src_ip=ip, src_port=int(port))
         node.start()
 
-
-
     # flag = 15
     # seq_num = 268_000_000
     # crc = 5

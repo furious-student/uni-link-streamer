@@ -2,10 +2,8 @@ from abc import ABC, abstractmethod
 import socket
 from libscrc import ccitt_false
 import threading
-import time
-import requests
 
-from typing import Literal, Union, Any, Tuple, List
+from typing import Any, Tuple, List
 
 
 def parse_header(header: bytes) -> Tuple[int, int, int]:
@@ -48,7 +46,8 @@ def add_header(header: bytes, payload: bytes) -> bytes:
 
 
 def create_packet(flag: int, seq_num: int, payload: bytes) -> bytes:
-    crc = calc_crc(payload)
+    header_no_crc = ((flag << 28) | seq_num).to_bytes(length=4, byteorder="big", signed=False)
+    crc = calc_crc(header_no_crc + payload)
     header = create_header(flag=flag, seq_num=seq_num, crc=crc)
     packet = add_header(header=header, payload=payload)
     return packet
@@ -65,7 +64,10 @@ def check_crc(crc_received: int, packet_received: bytes) -> bool:
 def is_command(input_message: str) -> Tuple[bool, str, List[str]]:
     words = input_message.split(" ")
     first_word = words[0]
-    other_words = words[1:]
+    if len(words) == 1:
+        other_words = None
+    else:
+        other_words = words[1:]
     # if the last character of the first word is exclamation mark, the command, other words (arguments)
     return first_word[-1] == "!", first_word, other_words
 
@@ -77,10 +79,17 @@ def text_input() -> str:
 
 class NodeType(ABC):
     __dst_address: Tuple[str, int]
-    __node_socket: socket
+    __src_address: Tuple[str, int]
+    __node_socket: socket.socket
+    __connection_open: bool
+    __shutdown_event: threading.Event
 
-    def __init__(self, dst_ip: Union[str, int], dst_port: int):
+    def __init__(self, dst_ip: str, dst_port: int, src_ip: str, src_port: int):
         self.__dst_address = (dst_ip, dst_port)
+        self.__src_address = (src_ip, src_port)
+        # Event to signal threads to gracefully terminate
+        self.__shutdown_event = threading.Event()
+        self.__connection_open = False
 
     def set_dst_address(self, dst_ip: str, dst_port: int) -> None:
         self.__dst_address = (dst_ip, dst_port)
@@ -91,15 +100,41 @@ class NodeType(ABC):
     def get_dst_address(self) -> Tuple[str, int]:
         return self.__dst_address
 
-    def get_socket(self) -> socket:
+    def get_src_address(self) -> Tuple[str, int]:
+        return self.__src_address
+
+    def get_socket(self) -> socket.socket:
         return self.__node_socket
+
+    def is_shutdown_event_set(self) -> bool:
+        return self.__shutdown_event.is_set()
+
+    def is_connection_open(self) -> bool:
+        return self.__connection_open
+
+    def set_connection_open(self, value: bool) -> None:
+        self.__connection_open = value
+
+    def send_packet(self, packet: bytes) -> None:
+        self.__node_socket.sendto(packet, self.get_dst_address())
+
+    def receive_packet(self) -> Tuple[int, int, bool, bytes, Any]:
+        response, src_addr = self.__node_socket.recvfrom(1472)
+        flag, seq_num, crc = parse_header(response[:6])
+        data = response[6:]
+        crc_check = check_crc(crc, response[:4] + response[6:])
+        return flag, seq_num, crc_check, data, src_addr
+
+    def shutdown(self) -> None:
+        print(">> Shutting down...")
+        self.__connection_open = False
+        # Set the shutdown event to signal other threads to terminate
+        self.__shutdown_event.set()
+        print(">> Press enter to exit")
+        # self.__node_socket.close()
 
     @abstractmethod
     def start(self) -> None:
-        pass
-
-    @abstractmethod
-    def send_packet(self, packet: bytes) -> None:
         pass
 
     @abstractmethod
