@@ -17,10 +17,12 @@ class Receiver(NodeType, ABC):
     __curr_message_isfile: bool
     __curr_message_has_last: bool
     __last_keep_alive_time: time
+    __curr_message_info_printed: bool
 
     def __init__(self, src_ip: str, src_port: int):
         super().__init__("", -1, src_ip=src_ip, src_port=src_port)
         self.__curr_message_nack = 0
+        self.__curr_message_info_printed = False
         self.__curr_message_isfile = False
         self.__curr_message_has_last = False
         self.__last_keep_alive_time = None
@@ -36,7 +38,17 @@ class Receiver(NodeType, ABC):
         print(">> Receiver is up")
         print(f">> Receiver listens on {self.get_src_address()}")
         print(">> To display all available commands, type 'help!'")
-        self.listen()
+
+        # Start the listening thread
+        listen_thread = threading.Thread(target=self.listen)
+        listen_thread.start()
+
+        message_check_thread = threading.Thread(target=self.check_message_status)
+        message_check_thread.start()
+
+        while not self.is_shutdown_event_set():
+            self.listen_input()
+        self.get_socket().close()
 
     def listen_input(self) -> str:
         message = input()
@@ -66,7 +78,7 @@ class Receiver(NodeType, ABC):
 
     def listen(self):
         start_keepalive = True
-        curr_message_info_printed = False
+        self.__curr_message_info_printed = False
         while not self.is_shutdown_event_set():
             try:
                 # Set a timeout for the recvfrom operation
@@ -113,7 +125,10 @@ class Receiver(NodeType, ABC):
             elif flag == 7:
                 pass  # n_switch
             elif flag == 8:
-                pass  # fin
+                # fin
+                self.set_connection_open(False)
+                self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
+                self.shutdown()
             elif flag == 9:
                 pass  # n_fin
             elif flag == 10:
@@ -125,14 +140,13 @@ class Receiver(NodeType, ABC):
                 # init/zero packet
                 packets_len = int.from_bytes(data, byteorder='big', signed=False)
                 self.init_message_status(packets_len)
-                curr_message_info_printed = False
-                self.__curr_message_has_last = False
-                self.__curr_message_isfile = False
                 self.send_packet(create_packet(flag=3, seq_num=seq_num, payload=b''))
 
+    def check_message_status(self) -> None:
+        while not self.is_shutdown_event_set():
             # Check if all packets have been received
-            if self.__curr_message_has_last and not self.has_missing_packet() and not curr_message_info_printed:
-                curr_message_info_printed = True
+            if self.__curr_message_has_last and not self.has_missing_packet() and not self.__curr_message_info_printed:
+                self.__curr_message_info_printed = True
                 self.handle_message()
 
     def handle_keep_alive(self, seq_num):
@@ -178,13 +192,16 @@ class Receiver(NodeType, ABC):
               f">> Received {self.__curr_message_nack} corrupted packets")
         self.__curr_message_nack = 0
         if self.__curr_message_isfile:
-            file_name = self.__curr_message_status[1][0].decode(encoding='utf-8')
+            file_name = os.path.basename(self.__curr_message_status[1][0].decode(encoding='utf-8'))
             location = input(f">> Received a file '{file_name}'."
                              f" Where to store it? ")
             self.write_file(location=location, file_name=file_name, content=self.rebuild_data(is_file=True))
         else:
             text = self.rebuild_data().decode(encoding='utf-8')
             print(f">> {text}")
+        self.__curr_message_info_printed = False
+        self.__curr_message_has_last = False
+        self.__curr_message_isfile = False
 
     def has_missing_packet(self) -> bool:
         for seq_num, data_tuple in self.__curr_message_status.items():

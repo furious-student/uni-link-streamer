@@ -130,7 +130,7 @@ class NodeType(ABC):
         self.__connection_open = False
         # Set the shutdown event to signal other threads to terminate
         self.__shutdown_event.set()
-        print(">> Press enter to exit")
+        print("   Connection closed. Press enter to exit")
         # self.__node_socket.close()
 
     @abstractmethod

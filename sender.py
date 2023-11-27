@@ -52,6 +52,7 @@ class Sender(NodeType, ABC):
 
         while not self.is_shutdown_event_set():
             self.listen_input()
+        self.get_socket().close()
 
     def fragment_data(self, data: bytes) -> List[bytes]:
         # Calculate the number of fragments needed
@@ -160,7 +161,7 @@ class Sender(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not open")
                 return
-            pass
+            self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
         elif cmd == "f_size!":
             self.__frag_size = int(arg)
         elif cmd == "syn!":
@@ -213,7 +214,9 @@ class Sender(NodeType, ABC):
             elif flag == 7:
                 pass  # n_switch
             elif flag == 8:
-                pass  # fin
+                # fin
+                self.set_connection_open(False)
+                self.shutdown()
             elif flag == 9:
                 pass  # n_fin
             elif flag == 10:
@@ -226,6 +229,8 @@ class Sender(NodeType, ABC):
         self.__keep_alive_timer.start()
 
     def keep_alive_timeout(self) -> None:
+        if self.is_shutdown_event_set():
+            return
         if self.__keep_alive_retries < MAX_RETRIES:
             # print("Sending keep-alive message.\n>> ", end="")
             # Send keep-alive message
