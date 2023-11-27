@@ -81,21 +81,33 @@ class NodeType(ABC):
     __dst_address: Tuple[str, int]
     __src_address: Tuple[str, int]
     __node_socket: socket.socket
+    __curr_message_received_packets: List[int]
+    __curr_message_sent_packets: List[int]
     __connection_open: bool
+    __fin_sent: bool
     __shutdown_event: threading.Event
 
     def __init__(self, dst_ip: str, dst_port: int, src_ip: str, src_port: int):
         self.__dst_address = (dst_ip, dst_port)
         self.__src_address = (src_ip, src_port)
+        self.__curr_message_received_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        self.__curr_message_sent_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         # Event to signal threads to gracefully terminate
         self.__shutdown_event = threading.Event()
         self.__connection_open = False
+        self.__fin_sent = False
 
     def set_dst_address(self, dst_ip: str, dst_port: int) -> None:
         self.__dst_address = (dst_ip, dst_port)
 
     def set_socket(self, node_socket) -> None:
         self.__node_socket = node_socket
+
+    def set_connection_open(self, value: bool) -> None:
+        self.__connection_open = value
+
+    def set_fin_sent(self, value: bool) -> None:
+        self.__fin_sent = value
 
     def get_dst_address(self) -> Tuple[str, int]:
         return self.__dst_address
@@ -106,14 +118,20 @@ class NodeType(ABC):
     def get_socket(self) -> socket.socket:
         return self.__node_socket
 
+    def get_curr_message_received_packets(self) -> List[int]:
+        return self.__curr_message_received_packets
+
+    def get_curr_message_sent_packets(self) -> List[int]:
+        return self.__curr_message_sent_packets
+
     def is_shutdown_event_set(self) -> bool:
         return self.__shutdown_event.is_set()
 
     def is_connection_open(self) -> bool:
         return self.__connection_open
 
-    def set_connection_open(self, value: bool) -> None:
-        self.__connection_open = value
+    def is_fin_sent(self) -> bool:
+        return self.__fin_sent
 
     def send_packet(self, packet: bytes) -> None:
         self.__node_socket.sendto(packet, self.get_dst_address())
@@ -126,12 +144,56 @@ class NodeType(ABC):
         return flag, seq_num, crc_check, data, src_addr
 
     def shutdown(self) -> None:
-        print(">> Shutting down...")
+        print("   Shutting down...")
         self.__connection_open = False
         # Set the shutdown event to signal other threads to terminate
         self.__shutdown_event.set()
-        print("   Connection closed. Press enter to exit")
-        # self.__node_socket.close()
+        print("   Connection closed\n"
+              "   Press 'Enter' to exit\n"
+              ">> ", end="")
+
+    def init_curr_message_received_packets(self) -> None:
+        syns = self.__curr_message_received_packets[0]
+        kas = self.__curr_message_received_packets[5]
+        fins = self.__curr_message_received_packets[8]
+        self.__curr_message_received_packets = [syns, 0, 0, 0, 0, kas, 0, 0, fins, 0, 0, 0, 0]
+
+    def init_curr_message_sent_packets(self) -> None:
+        syns = self.__curr_message_sent_packets[0]
+        kas = self.__curr_message_sent_packets[5]
+        fins = self.__curr_message_sent_packets[8]
+        self.__curr_message_sent_packets = [syns, 0, 0, 0, 0, kas, 0, 0, fins, 0, 0, 0, 0]
+
+    def print_sent_packet_stats(self) -> None:
+        packets_stats = self.__curr_message_sent_packets
+        ack_and_data = sum(packets_stats[1:5] + packets_stats[6:8] + packets_stats[9:])
+        print(f">> Sent: {ack_and_data} packets (without syn, keep-alive and fin):\n"
+              f"   {packets_stats[0]} SYN packets\n"
+              f"   {packets_stats[11]} INIT packet\n"
+              f"   {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
+              f"   {packets_stats[3]} ACK packets\n"
+              f"   {packets_stats[4]} N_ACK packets\n"
+              f"   {packets_stats[5]} KEEP-ALIVE packets\n"
+              f"   {packets_stats[8]} FIN packets")
+
+    def print_received_packet_stats(self) -> None:
+        packets_stats = self.__curr_message_received_packets
+        ack_and_data = sum(packets_stats[1:5] + packets_stats[6:8] + packets_stats[9:])
+        print(f">> Received: {ack_and_data} packets (without syn, keep-alive and fin):\n"
+              f"   {packets_stats[0]} SYN packets\n"
+              f"   {packets_stats[11]} INIT packet\n"
+              f"   {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
+              f"   {packets_stats[3]} ACK packets\n"
+              f"   {packets_stats[4]} N_ACK packets\n"
+              f"   {packets_stats[12]} corrupted packets\n"
+              f"   {packets_stats[5]} KEEP-ALIVE packets\n"
+              f"   {packets_stats[8]} FIN packets")
+
+    def inc_curr_message_received_packets(self, index: int) -> None:
+        self.__curr_message_received_packets[index] += 1
+
+    def inc_curr_message_sent_packets(self, index: int) -> None:
+        self.__curr_message_sent_packets[index] += 1
 
     @abstractmethod
     def start(self) -> None:

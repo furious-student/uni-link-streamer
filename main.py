@@ -10,13 +10,13 @@ def main():
     node_type = input("Input node type (sender|receiver): ")
     node: Union[Optional["Sender"], Optional["Receiver"]]
     if node_type == "sender":
-        ip = input("IP: ")
-        port = input("Port: ")
+        ip = input("Destination IP: ")
+        port = input("Destination Port: ")
         node = Sender(dst_ip=ip, dst_port=int(port))
         node.start()
     elif node_type == "receiver":
-        ip = input("IP: ")
-        port = input("Port: ")
+        ip = input("Source IP: ")
+        port = input("Source Port: ")
         node = Receiver(src_ip=ip, src_port=int(port))
         node.start()
 

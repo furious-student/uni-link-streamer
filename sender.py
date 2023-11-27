@@ -23,7 +23,6 @@ def file_input(file_name: str) -> bytes:
 
 class Sender(NodeType, ABC):
     __curr_message_status: Dict[int, Tuple[bytes, bool]]
-    __curr_message_nack: int
     __frag_size: int
     __keep_alive_timer: threading
     __keep_alive_retries: int
@@ -32,7 +31,6 @@ class Sender(NodeType, ABC):
     def __init__(self, dst_ip: str, dst_port: int):
         super().__init__(dst_ip=dst_ip, dst_port=dst_port, src_ip="127.0.0.1", src_port=1234)
         self.__frag_size = 10
-        self.__curr_message_nack = 0
         self.__keep_alive_timer = None
         self.__keep_alive_retries = 0
         self.__response_received_event = threading.Event()
@@ -79,9 +77,12 @@ class Sender(NodeType, ABC):
 
     def send_all_packets(self, packets: List[bytes]) -> None:
         self.map_packets(packets=packets)
-        # send first (must be acked)
+        self.init_curr_message_received_packets()
+        self.init_curr_message_sent_packets()
+        # send INIT packet (must be acked)
         while self.__curr_message_status[0][1] is False:
             self.send_packet(packet=packets[0])
+            self.inc_curr_message_sent_packets(index=11)
             # Wait for the response
             if self.__response_received_event.wait(timeout=2):
                 # Clear the event for the next iteration
@@ -97,13 +98,14 @@ class Sender(NodeType, ABC):
             if number % 3 == 2:
                 pkt += b'\xf1'
             self.send_packet(pkt)
+            self.inc_curr_message_sent_packets(index=2)
             number += 1
         # keep sending unacked packets until all are acked
         while self.has_missing_packet():
             self.resend_unacked()
-        print(f">> Sent {len(self.__curr_message_status)} packets\n"
-              f">> Received {self.__curr_message_nack} N_ACK packets")
-        self.__curr_message_nack = 0
+        self.print_received_packet_stats()
+        self.print_sent_packet_stats()
+
 
     def resend_unacked(self) -> None:
         # Waiting time before starting to resend
@@ -113,6 +115,7 @@ class Sender(NodeType, ABC):
             packet, received = data_tuple
             if received is False:
                 self.send_packet(packet=packet)
+                self.inc_curr_message_sent_packets(index=2)
 
     def send_file_data(self, path) -> None:
         b_file = file_input(file_name=path)
@@ -161,11 +164,17 @@ class Sender(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not open")
                 return
+            self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
-        elif cmd == "f_size!":
+            self.inc_curr_message_sent_packets(index=8)
+        elif cmd == "fsize!":
             self.__frag_size = int(arg)
         elif cmd == "syn!":
+            if self.is_connection_open():
+                print(">> Connection is already opened")
+                return
             self.send_packet(create_packet(flag=0, seq_num=0, payload=b''))
+            self.inc_curr_message_sent_packets(index=0)
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"
@@ -175,6 +184,35 @@ class Sender(NodeType, ABC):
                   f"   src_address:     {self.get_src_address()}\n"
                   f"   connection_open: {self.is_connection_open()}\n"
                   f"   ---")
+        elif cmd == "help!":
+            print(f">> HELP\n"
+                  f"   ---\n"
+                  f"   'end!':     Sends a signal to the other node that you want to\n"
+                  f"               close the connection. If a FIN is received from\n"
+                  f"               the other node, the connection is closed and the\n"
+                  f"               program terminates.\n"
+                  f"   'file!':    Must have a second argument (a file name) separa-\n"
+                  f"               ted with space, e.g. 'file! example.txt'. This \n"
+                  f"               command sends a file to the other node.\n"
+                  f"   'fsize!':   With this command you can set the fragment size\n"
+                  f"               in bytes of each packet sent. The fragment size\n"
+                  f"               is an integer taken as a second argument, e.g. \n"
+                  f"               'fsize! 500' sets the fragment size to 500 bytes.\n"
+                  f"               The argument must be from interval <1, 1466>.\n"
+                  f"               Defaults to 10.\n"
+                  f"   'help!':    Displays this.\n"
+                  f"   'info!':    Displays info about this node.\n"
+                  f"   'switch!':  Sends a signal to the other node that you want\n"
+                  f"               to switch roles.\n"
+                  f"   'syn!':     Sends a signal to the other node that you want to\n"
+                  f"               initiate connection. If a SYN is received from\n"
+                  f"               the other node, the connection is opened and you\n"
+                  f"               can start sending messages and files.\n"
+                  f"   plain text: If you input only plain text, the program sends\n"
+                  f"               it to the other node as a message.\n"
+                  f"   ---")
+        else:
+            print(f">> Command '{cmd}' is not a valid command")
 
     def listen(self):
         while not self.is_shutdown_event_set():
@@ -185,11 +223,17 @@ class Sender(NodeType, ABC):
                 # Reset the timeout to None after a successful reception
                 self.get_socket().settimeout(None)
             except socket.timeout:
+                self.get_socket().settimeout(None)
                 continue
             if crc_check is False:
+                self.inc_curr_message_received_packets(12)
                 continue
             if flag == 0:
                 # syn
+                self.inc_curr_message_received_packets(0)
+                if self.is_connection_open():
+                    print("Connection is already opened\n>> ", end="")
+                    continue
                 self.set_connection_open(True)
                 # Start the keep-alive mechanism
                 self.start_keep_alive()
@@ -199,15 +243,17 @@ class Sender(NodeType, ABC):
                 pass  # data
             elif flag == 3:
                 # ack
+                self.inc_curr_message_received_packets(index=3)
                 if seq_num == 0:
                     self.__response_received_event.set()
                 self.update_message_status(seq_num=seq_num)
             elif flag == 4:
                 # n_ack
-                self.__curr_message_nack += 1
+                self.inc_curr_message_received_packets(index=4)
             elif flag == 5:
                 # keep_alive
                 # Reset the keep-alive timer
+                self.inc_curr_message_received_packets(index=5)
                 self.reset_keep_alive_timer()
             elif flag == 6:
                 pass  # switch
@@ -216,6 +262,10 @@ class Sender(NodeType, ABC):
             elif flag == 8:
                 # fin
                 self.set_connection_open(False)
+                self.inc_curr_message_received_packets(index=8)
+                if not self.is_fin_sent():
+                    self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
+                    self.inc_curr_message_sent_packets(index=8)
                 self.shutdown()
             elif flag == 9:
                 pass  # n_fin
@@ -235,11 +285,12 @@ class Sender(NodeType, ABC):
             # print("Sending keep-alive message.\n>> ", end="")
             # Send keep-alive message
             self.send_packet(create_packet(flag=5, seq_num=0, payload=b''))
+            self.inc_curr_message_sent_packets(index=5)
             self.__keep_alive_retries += 1
             # Restart the keep-alive timer
             self.start_keep_alive()
         else:
-            print("Keep-alive timeout\n>> Shutting down the connection\n>> ", end="")
+            print("Keep-alive timeout\n", end="")
             self.shutdown()
 
     def reset_keep_alive_timer(self) -> None:
