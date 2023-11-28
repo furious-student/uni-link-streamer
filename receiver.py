@@ -17,6 +17,7 @@ class Receiver(NodeType, ABC):
     __curr_message_has_last: bool
     __last_keep_alive_time: time
     __curr_message_info_printed: bool
+    __start_keepalive: bool
 
     def __init__(self, src_ip: str, src_port: int,
                  curr_message_received_packets: list[int] = None,
@@ -32,6 +33,7 @@ class Receiver(NodeType, ABC):
         self.__curr_message_isfile = False
         self.__curr_message_has_last = False
         self.__last_keep_alive_time = None
+        self.__start_keepalive = True
 
     def set_dst_address(self, dst_ip, dst_port):
         super().set_dst_address(dst_ip=dst_ip, dst_port=dst_port)
@@ -45,6 +47,10 @@ class Receiver(NodeType, ABC):
             self.get_socket().bind(self.get_src_address())
         else:
             self.set_socket(node_socket=node_socket)
+            self.__start_keepalive = False
+            # Start a thread for keep-alive timeout checks
+            timeout_thread = threading.Thread(target=self.check_timeout)
+            timeout_thread.start()
 
         if soft is True:
             print(">> Switched to Receiver")
@@ -155,7 +161,6 @@ class Receiver(NodeType, ABC):
         return os.path.abspath(path)
 
     def listen(self):
-        start_keepalive = True
         self.__curr_message_info_printed = False
         while not self.is_shutdown_event_set():
             try:
@@ -203,11 +208,11 @@ class Receiver(NodeType, ABC):
                 pass  # n_ack
             elif flag == 5:
                 # keep_alive
-                if start_keepalive is True:
+                if self.__start_keepalive is True:
                     # Start a thread for keep-alive timeout checks
                     timeout_thread = threading.Thread(target=self.check_timeout)
                     timeout_thread.start()
-                    start_keepalive = False  # to only start the thread after first keepalive arrives
+                    self.__start_keepalive = False  # to only start the thread after first keepalive arrives
                 self.inc_curr_message_received_packets(index=5)
                 self.handle_keep_alive(seq_num=seq_num)
             elif flag == 6:

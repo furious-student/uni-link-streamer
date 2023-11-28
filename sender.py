@@ -55,13 +55,15 @@ class Sender(NodeType, ABC):
             self.get_socket().bind(self.get_src_address())
         else:
             self.set_socket(node_socket=node_socket)
+            # Start the keep-alive mechanism
+            self.start_keep_alive()
 
         if soft is True:
             print(">> Switched to Sender")
         else:
             print(">> Sender is up")
-        print(f"  Messages will be send over to {self.get_dst_address()}")
-        print(f"  To display all available commands, type 'help!'")
+        print(f"   Messages will be send over to {self.get_dst_address()}")
+        print(f"   To display all available commands, type 'help!'")
 
         # Start the listening thread
         listen_thread = threading.Thread(target=self.listen)
