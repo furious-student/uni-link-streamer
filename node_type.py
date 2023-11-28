@@ -3,7 +3,7 @@ import socket
 from libscrc import ccitt_false
 import threading
 
-from typing import Any, Tuple, List
+from typing import Tuple, List, Union
 
 
 def parse_header(header: bytes) -> Tuple[int, int, int]:
@@ -53,6 +53,12 @@ def create_packet(flag: int, seq_num: int, payload: bytes) -> bytes:
     return packet
 
 
+def print_packet(flag: int, seq_num: int, crc_check: int):
+    print(f"flag: {flag} | seq_num: {seq_num} | crc_check: {crc_check}")
+    if flag == 0:
+        print(">> ", end="")
+
+
 def calc_crc(fragment_data: bytes) -> int:
     return ccitt_false(fragment_data)
 
@@ -61,19 +67,20 @@ def check_crc(crc_received: int, packet_received: bytes) -> bool:
     return crc_received == calc_crc(packet_received)
 
 
-def is_command(input_message: str) -> Tuple[bool, str, List[str]]:
+def is_command(input_message: str) -> Tuple[bool, str, str]:
     words = input_message.split(" ")
     first_word = words[0]
     if len(words) == 1:
         other_words = None
     else:
-        other_words = words[1:]
-    # if the last character of the first word is exclamation mark, the command, other words (arguments)
+        other_words = " ".join(words[1:])
+    # if the last character of the first word is exclamation mark, the command, other words (argument)
     return first_word[-1] == "!", first_word, other_words
 
 
 def text_input() -> str:
-    message = input(">> ")
+    print(">> ", end="")
+    message = input()
     return message
 
 
@@ -85,20 +92,38 @@ class NodeType(ABC):
     __curr_message_sent_packets: List[int]
     __connection_open: bool
     __fin_sent: bool
+    __switch_sent: bool
     __shutdown_event: threading.Event
+    __switch_state: Union[None, Tuple[str, socket.socket, Tuple[str, int], Tuple[str, int], List[int], List[int]]]
 
-    def __init__(self, dst_ip: str, dst_port: int, src_ip: str, src_port: int):
+    def __init__(self, dst_ip: str, dst_port: int, src_ip: str, src_port: int,
+                 curr_message_received_packets: list[int] = None,
+                 curr_message_sent_packets: list[int] = None,
+                 connection_open: bool = False
+                 ):
         self.__dst_address = (dst_ip, dst_port)
         self.__src_address = (src_ip, src_port)
-        self.__curr_message_received_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        self.__curr_message_sent_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        if curr_message_received_packets is None:
+            self.__curr_message_received_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        else:
+            self.__curr_message_received_packets = curr_message_received_packets
+
+        if curr_message_sent_packets is None:
+            self.__curr_message_sent_packets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        else:
+            self.__curr_message_sent_packets = curr_message_sent_packets
         # Event to signal threads to gracefully terminate
         self.__shutdown_event = threading.Event()
-        self.__connection_open = False
+        self.__connection_open = connection_open
         self.__fin_sent = False
+        self.__switch_sent = False
+        self.__switch_state = None
 
     def set_dst_address(self, dst_ip: str, dst_port: int) -> None:
         self.__dst_address = (dst_ip, dst_port)
+
+    def set_src_address(self, src_ip: str, src_port: int):
+        self.__src_address = (src_ip, src_port)
 
     def set_socket(self, node_socket) -> None:
         self.__node_socket = node_socket
@@ -108,6 +133,15 @@ class NodeType(ABC):
 
     def set_fin_sent(self, value: bool) -> None:
         self.__fin_sent = value
+
+    def set_switch_sent(self, value: bool) -> None:
+        self.__switch_sent = value
+
+    def set_switch_state(self,
+                         value: Union[None, Tuple[str, socket.socket,
+                                                  Tuple[str, int], Tuple[str, int],
+                                                  List[int], List[int]]]) -> None:
+        self.__switch_state = value
 
     def get_dst_address(self) -> Tuple[str, int]:
         return self.__dst_address
@@ -124,6 +158,11 @@ class NodeType(ABC):
     def get_curr_message_sent_packets(self) -> List[int]:
         return self.__curr_message_sent_packets
 
+    def get_switch_state(self) -> Union[None, Tuple[str, socket.socket,
+                                                    Tuple[str, int], Tuple[str, int],
+                                                    List[int], List[int]]]:
+        return self.__switch_state
+
     def is_shutdown_event_set(self) -> bool:
         return self.__shutdown_event.is_set()
 
@@ -133,10 +172,13 @@ class NodeType(ABC):
     def is_fin_sent(self) -> bool:
         return self.__fin_sent
 
+    def is_switch_sent(self) -> bool:
+        return self.__switch_sent
+
     def send_packet(self, packet: bytes) -> None:
         self.__node_socket.sendto(packet, self.get_dst_address())
 
-    def receive_packet(self) -> Tuple[int, int, bool, bytes, Any]:
+    def receive_packet(self) -> Tuple[int, int, bool, bytes, Tuple[str, int]]:
         response, src_addr = self.__node_socket.recvfrom(1472)
         flag, seq_num, crc = parse_header(response[:6])
         data = response[6:]
@@ -196,7 +238,7 @@ class NodeType(ABC):
         self.__curr_message_sent_packets[index] += 1
 
     @abstractmethod
-    def start(self) -> None:
+    def start(self, soft: bool = False, node_socket: socket.socket = None) -> None:
         pass
 
     @abstractmethod

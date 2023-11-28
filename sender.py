@@ -1,10 +1,11 @@
-import threading
-from abc import ABC
+import os.path
+import select
+import socket
+import sys
 import time
 from typing import Dict
 
 from node_type import *
-
 
 # Constants
 TIMEOUT_INTERVAL_SENDER = 5  # Timeout interval for keep-alive mechanism in seconds
@@ -28,34 +29,60 @@ class Sender(NodeType, ABC):
     __keep_alive_retries: int
     __response_received_event: threading.Event
 
-    def __init__(self, dst_ip: str, dst_port: int):
-        super().__init__(dst_ip=dst_ip, dst_port=dst_port, src_ip="127.0.0.1", src_port=1234)
+    def __init__(self, dst_ip: str, dst_port: int,
+                 curr_message_received_packets: list[int] = None,
+                 curr_message_sent_packets: list[int] = None,
+                 connection_open: bool = False
+                 ):
+        super().__init__(dst_ip=dst_ip, dst_port=dst_port, src_ip="127.0.0.1", src_port=1234,
+                         curr_message_received_packets=curr_message_received_packets,
+                         curr_message_sent_packets=curr_message_sent_packets,
+                         connection_open=connection_open)
         self.__frag_size = 10
         self.__keep_alive_timer = None
         self.__keep_alive_retries = 0
         self.__response_received_event = threading.Event()
 
-    def start(self) -> None:
-        # Create a UDP socket
-        super().set_socket(socket.socket(socket.AF_INET,      # Internet
-                                         socket.SOCK_DGRAM))  # UDP
-        self.get_socket().bind(self.get_src_address())
-        print(">> Sender is up")
-        print(f">> Messages will be send over to {self.get_dst_address()}")
-        print(">> To display all available commands, type 'help!'")
+    def set_src_address(self, src_ip, src_port):
+        super().set_src_address(src_ip=src_ip, src_port=src_port)
+
+    def start(self, soft: bool = False, node_socket: socket.socket = None) -> \
+            Union[None, Tuple[str, socket.socket, Tuple[str, int], Tuple[str, int], List[int], List[int]]]:
+        if node_socket is None:
+            # Create a UDP socket
+            super().set_socket(socket.socket(socket.AF_INET,  # Internet
+                                             socket.SOCK_DGRAM))  # UDP
+            self.get_socket().bind(self.get_src_address())
+        else:
+            self.set_socket(node_socket=node_socket)
+
+        if soft is True:
+            print(">> Switched to Sender")
+        else:
+            print(">> Sender is up")
+        print(f"  Messages will be send over to {self.get_dst_address()}")
+        print(f"  To display all available commands, type 'help!'")
 
         # Start the listening thread
         listen_thread = threading.Thread(target=self.listen)
         listen_thread.start()
 
+        print(">> ", end="")
         while not self.is_shutdown_event_set():
             self.listen_input()
-        self.get_socket().close()
+            if self.get_switch_state() is not None and self.is_switch_sent():
+                self.shutdown()
+
+        # wait until thread finish
+        listen_thread.join()
+        if self.get_switch_state() is None:
+            self.get_socket().close()
+        return self.get_switch_state()
 
     def fragment_data(self, data: bytes) -> List[bytes]:
         # Calculate the number of fragments needed
         frag_num = len(data) // self.__frag_size + (len(data) % self.__frag_size != 0)
-        fragments = [data[i*self.__frag_size:(i+1)*self.__frag_size] for i in range(frag_num)]
+        fragments = [data[i * self.__frag_size:(i + 1) * self.__frag_size] for i in range(frag_num)]
         return fragments
 
     def map_packets(self, packets: List[bytes]) -> None:
@@ -63,12 +90,12 @@ class Sender(NodeType, ABC):
         for seq_num, frag in enumerate(packets):
             self.__curr_message_status.update({seq_num: (frag, False)})
 
-    def create_data_packets(self, data: bytes, init_seq_num: int) -> List[bytes]:
-        flag = 2  # flag 2 = DATA
+    def create_packets(self, flag: int, data: bytes, init_seq_num: int) -> List[bytes]:
+        # flag 2 = DATA
         data_fragments = self.fragment_data(data=data)
         packets = list()
         for index, frag in enumerate(data_fragments):
-            if index == len(data_fragments)-1:
+            if index == len(data_fragments) - 1 and flag != 1:
                 flag = 10
             packet = create_packet(flag=flag, seq_num=init_seq_num, payload=frag)
             packets.append(packet)
@@ -95,8 +122,8 @@ class Sender(NodeType, ABC):
                 number += 1
                 continue
             # Inject error in every third packet
-            if number % 3 == 2:
-                pkt += b'\xf1'
+            # if number % 3 == 2:
+            #     pkt += b'\xf1'
             self.send_packet(pkt)
             self.inc_curr_message_sent_packets(index=2)
             number += 1
@@ -105,7 +132,7 @@ class Sender(NodeType, ABC):
             self.resend_unacked()
         self.print_received_packet_stats()
         self.print_sent_packet_stats()
-
+        print(">> ", end="")
 
     def resend_unacked(self) -> None:
         # Waiting time before starting to resend
@@ -119,50 +146,60 @@ class Sender(NodeType, ABC):
 
     def send_file_data(self, path) -> None:
         b_file = file_input(file_name=path)
-        b_file_name = message_to_bytes(path)
-        first_packet = create_packet(flag=1, seq_num=1, payload=b_file_name)
-        packets = [first_packet] + self.create_data_packets(data=b_file, init_seq_num=2)
-        zero_packet = create_packet(11, 0, (len(packets)+1).to_bytes(4, byteorder="big", signed=False))
+        file_name_packets = self.create_packets(flag=1, init_seq_num=1,
+                                                data=message_to_bytes(os.path.basename(path)))
+        packets = file_name_packets + self.create_packets(flag=2, data=b_file, init_seq_num=len(file_name_packets) + 1)
+        zero_packet = create_packet(flag=11, seq_num=0,
+                                    payload=(len(packets) + 1).to_bytes(4, byteorder="big", signed=False))
         packets = [zero_packet] + packets
         self.send_all_packets(packets=packets)
 
+    def send_text(self, input_message: str) -> None:
+        b_message = message_to_bytes(input_message)
+        data_packets = self.create_packets(flag=2, data=b_message, init_seq_num=1)
+        zero_packet = create_packet(11, 0, (len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False))
+        data_packets = [zero_packet] + data_packets
+        self.send_all_packets(data_packets)
+
     def listen_input(self) -> None:
-        input_message = text_input()
+        rlist, _, _ = select.select([sys.stdin], [], [], 5)
+        if not rlist:
+            return
+
+        input_message = sys.stdin.readline().strip()
         if self.is_shutdown_event_set() is True:
             print(">> Program ended")
+            return
+        if len(input_message) <= 0:
             return
         command = is_command(input_message)
         if command[0]:
             cmd = command[1]
-            if command[2] is None:
-                args = None
-            else:
-                args = command[2][0]
-            self.handle_cmd(cmd=cmd, arg=args)
+            arg = command[2]
+            self.handle_cmd(cmd=cmd, arg=arg)
         else:
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
-            b_message = message_to_bytes(input_message)
-            data_packets = self.create_data_packets(data=b_message, init_seq_num=1)
-            zero_packet = create_packet(11, 0, (len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False))
-            data_packets = [zero_packet] + data_packets
-            self.send_all_packets(data_packets)
+            self.send_text(input_message=input_message)
 
     def handle_cmd(self, cmd: str, arg: str) -> None:
         if cmd == "file!":
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
             self.send_file_data(path=arg)
         elif cmd == "switch!":
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
-            pass
+            self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
+            self.inc_curr_message_sent_packets(index=6)
+            self.set_switch_sent(True)
+            print(">> ", end="")
         elif cmd == "end!":
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
@@ -171,10 +208,16 @@ class Sender(NodeType, ABC):
             self.__frag_size = int(arg)
         elif cmd == "syn!":
             if self.is_connection_open():
-                print(">> Connection is already opened")
+                print(">> Connection is already opened\n>> ", end="")
                 return
             self.send_packet(create_packet(flag=0, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=0)
+            print(">> ", end="")
+        elif cmd == "m!":
+            if arg is None:
+                print(f">> No argument specified for command {cmd}\n>> ", end="")
+                return
+            self.send_text(input_message=arg)
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"
@@ -183,7 +226,8 @@ class Sender(NodeType, ABC):
                   f"   dst_address:     {self.get_dst_address()}\n"
                   f"   src_address:     {self.get_src_address()}\n"
                   f"   connection_open: {self.is_connection_open()}\n"
-                  f"   ---")
+                  f"   ---\n"
+                  f">> ", end="")
         elif cmd == "help!":
             print(f">> HELP\n"
                   f"   ---\n"
@@ -202,6 +246,10 @@ class Sender(NodeType, ABC):
                   f"               Defaults to 10.\n"
                   f"   'help!':    Displays this.\n"
                   f"   'info!':    Displays info about this node.\n"
+                  f"   'm!':       Same as plain text (see bellow). All following\n"
+                  f"               words are interpreted as a textual message to be\n"
+                  f"               sent over to the other node. If no words follow,\n"
+                  f"               nothing happens.\n"
                   f"   'switch!':  Sends a signal to the other node that you want\n"
                   f"               to switch roles.\n"
                   f"   'syn!':     Sends a signal to the other node that you want to\n"
@@ -210,9 +258,10 @@ class Sender(NodeType, ABC):
                   f"               can start sending messages and files.\n"
                   f"   plain text: If you input only plain text, the program sends\n"
                   f"               it to the other node as a message.\n"
-                  f"   ---")
+                  f"   ---\n"
+                  f">> ", end="")
         else:
-            print(f">> Command '{cmd}' is not a valid command")
+            print(f">> Command '{cmd}' is not a valid command\n>> ", end="")
 
     def listen(self):
         while not self.is_shutdown_event_set():
@@ -256,7 +305,19 @@ class Sender(NodeType, ABC):
                 self.inc_curr_message_received_packets(index=5)
                 self.reset_keep_alive_timer()
             elif flag == 6:
-                pass  # switch
+                # switch
+                self.inc_curr_message_received_packets(index=6)
+                if self.is_switch_sent() is False:
+                    self.send_packet(create_packet(flag=6, seq_num=seq_num, payload=b''))
+                    self.inc_curr_message_sent_packets(index=6)
+                    self.set_switch_sent(True)
+                state = ("receiver",
+                         self.get_socket(),
+                         self.get_dst_address(),
+                         self.get_src_address(),
+                         self.get_curr_message_received_packets(),
+                         self.get_curr_message_sent_packets())
+                self.set_switch_state(state)
             elif flag == 7:
                 pass  # n_switch
             elif flag == 8:
@@ -264,7 +325,7 @@ class Sender(NodeType, ABC):
                 self.set_connection_open(False)
                 self.inc_curr_message_received_packets(index=8)
                 if not self.is_fin_sent():
-                    self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
+                    self.send_packet(create_packet(flag=8, seq_num=seq_num, payload=b''))
                     self.inc_curr_message_sent_packets(index=8)
                 self.shutdown()
             elif flag == 9:
@@ -314,4 +375,3 @@ class Sender(NodeType, ABC):
             data, acked = self.__curr_message_status[seq_num]
             # Update the bool value
             self.__curr_message_status[seq_num] = (data, True)
-

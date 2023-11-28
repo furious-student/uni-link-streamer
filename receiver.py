@@ -1,8 +1,8 @@
 import os
-import socket
-from abc import ABC
+import select
+import sys
 import time
-from typing import Tuple, Dict
+from typing import Dict
 
 from node_type import *
 
@@ -13,14 +13,21 @@ TIMEOUT_INTERVAL_RECEIVER = 15  # Timeout interval for keep-alive mechanism in s
 class Receiver(NodeType, ABC):
     __curr_message_status: Dict[int, Tuple[bytes, bool]]
     __curr_message_isfile: bool
+    __curr_message_f_name_size: int
     __curr_message_has_last: bool
     __last_keep_alive_time: time
     __curr_message_info_printed: bool
 
-    def __init__(self, src_ip: str, src_port: int):
-        super().__init__("", -1, src_ip=src_ip, src_port=src_port)
-        self.init_curr_message_received_packets()
-        self.init_curr_message_sent_packets()
+    def __init__(self, src_ip: str, src_port: int,
+                 curr_message_received_packets: list[int] = None,
+                 curr_message_sent_packets: list[int] = None,
+                 connection_open: bool = False
+                 ):
+        super().__init__(dst_ip="", dst_port=-1, src_ip=src_ip, src_port=src_port,
+                         curr_message_received_packets=curr_message_received_packets,
+                         curr_message_sent_packets=curr_message_sent_packets,
+                         connection_open=connection_open)
+        self.__curr_message_f_name_size = 0
         self.__curr_message_info_printed = False
         self.__curr_message_isfile = False
         self.__curr_message_has_last = False
@@ -29,14 +36,23 @@ class Receiver(NodeType, ABC):
     def set_dst_address(self, dst_ip, dst_port):
         super().set_dst_address(dst_ip=dst_ip, dst_port=dst_port)
 
-    def start(self) -> None:
-        # Create a UDP socket
-        super().set_socket(socket.socket(socket.AF_INET,  # Internet
-                                         socket.SOCK_DGRAM))  # UDP
-        self.get_socket().bind(self.get_src_address())
-        print(">> Receiver is up")
-        print(f">> Receiver listens on {self.get_src_address()}")
-        print(">> To display all available commands, type 'help!'")
+    def start(self, soft: bool = False, node_socket: socket.socket = None) -> \
+            Union[None, Tuple[str, socket.socket, Tuple[str, int], Tuple[str, int], List[int], List[int]]]:
+        if node_socket is None:
+            # Create a UDP socket
+            super().set_socket(socket.socket(socket.AF_INET,  # Internet
+                                             socket.SOCK_DGRAM))  # UDP
+            self.get_socket().bind(self.get_src_address())
+        else:
+            self.set_socket(node_socket=node_socket)
+
+        if soft is True:
+            print(">> Switched to Receiver")
+        else:
+            print(">> Receiver is up")
+        print(f"   Receiver listens on {self.get_src_address()}")
+        print(f"   To display all available commands, type 'help!'\n"
+              f">> ", end="")
 
         # Start the listening thread
         listen_thread = threading.Thread(target=self.listen)
@@ -47,12 +63,26 @@ class Receiver(NodeType, ABC):
 
         while not self.is_shutdown_event_set():
             self.listen_input()
-        self.get_socket().close()
+            if self.get_switch_state() is not None and self.is_switch_sent():
+                self.shutdown()
+
+        # wait until threads finish
+        listen_thread.join()
+        message_check_thread.join()
+        if self.get_switch_state() is None:
+            self.get_socket().close()
+        return self.get_switch_state()
 
     def listen_input(self) -> None:
-        input_message = text_input()
+        rlist, _, _ = select.select([sys.stdin], [], [], 5)
+        if not rlist:
+            return
+
+        input_message = sys.stdin.readline().strip()
         if self.is_shutdown_event_set() is True:
             print(">> Program ended")
+            return
+        if len(input_message) <= 0:
             return
         command = is_command(input_message)
         if command[0]:
@@ -63,17 +93,20 @@ class Receiver(NodeType, ABC):
                 args = command[2][0]
             self.handle_cmd(cmd=cmd, arg=args)
         else:
-            print(f">> Command '{command[1]}' is not a valid command")
+            print(f">> Command '{command[1]}' is not a valid command\n"
+                  f">> ", end="")
 
     def handle_cmd(self, cmd: str, arg: str) -> None:
         if cmd == "switch!":
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
-            pass
+            self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
+            self.inc_curr_message_sent_packets(index=6)
+            self.set_switch_sent(True)
         elif cmd == "end!":
             if not self.is_connection_open():
-                print(">> Connection is not open")
+                print(">> Connection is not open\n>> ", end="")
                 return
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
@@ -85,7 +118,8 @@ class Receiver(NodeType, ABC):
                   f"   dst_address:     {self.get_dst_address()}\n"
                   f"   src_address:     {self.get_src_address()}\n"
                   f"   connection_open: {self.is_connection_open()}\n"
-                  f"   ---")
+                  f"   ---\n"
+                  f">> ", end="")
         elif cmd == "help!":
             print(f">> HELP\n"
                   f"   ---\n"
@@ -97,14 +131,13 @@ class Receiver(NodeType, ABC):
                   f"   'info!':    Displays info about this node.\n"
                   f"   'switch!':  Sends a signal to the other node that you want\n"
                   f"               to switch roles.\n"
-                  f"   ---")
+                  f"   ---\n"
+                  f">> ", end="")
         else:
-            print(f">> Command '{cmd}' is not a valid command")
+            print(f">> Command '{cmd}' is not a valid command\n"
+                  f">> ", end="")
 
-    def keep_alive(self) -> None:
-        pass
-
-    def write_file(self, location: str, file_name: str, content: bytes) -> None:
+    def write_file(self, location: str, file_name: str, content: bytes) -> str:
         # If the file already exists, find a new name
         path = location + file_name
         if os.path.isfile(path):
@@ -119,6 +152,7 @@ class Receiver(NodeType, ABC):
         file = open(path, 'wb')
         file.write(content)
         file.close()
+        return os.path.abspath(path)
 
     def listen(self):
         start_keepalive = True
@@ -133,9 +167,7 @@ class Receiver(NodeType, ABC):
                 if flag != 5:
                     if flag == 1 or flag == 2 or flag == 10:
                         print("   ", end="")
-                    print(f"flag: {flag} | seq_num: {seq_num} | crc_check: {crc_check}")
-                    if flag == 0:
-                        print(">> ", end="")
+                    print_packet(flag, seq_num, crc_check)
             except socket.timeout:
                 self.get_socket().settimeout(None)
                 continue
@@ -158,6 +190,7 @@ class Receiver(NodeType, ABC):
                 self.inc_curr_message_received_packets(index=1)
                 self.inc_curr_message_sent_packets(index=3)
                 self.__curr_message_isfile = True
+                self.__curr_message_f_name_size += 1
             elif flag == 2:
                 # data
                 self.update_message_status(seq_num=seq_num, data=data)
@@ -178,7 +211,19 @@ class Receiver(NodeType, ABC):
                 self.inc_curr_message_received_packets(index=5)
                 self.handle_keep_alive(seq_num=seq_num)
             elif flag == 6:
-                pass  # switch
+                # switch
+                self.inc_curr_message_received_packets(index=6)
+                if self.is_switch_sent() is False:
+                    self.send_packet(create_packet(flag=6, seq_num=seq_num, payload=b''))
+                    self.inc_curr_message_sent_packets(index=6)
+                    self.set_switch_sent(True)
+                state = ("sender",
+                         self.get_socket(),
+                         self.get_dst_address(),
+                         self.get_src_address(),
+                         self.get_curr_message_received_packets(),
+                         self.get_curr_message_sent_packets())
+                self.set_switch_state(state)
             elif flag == 7:
                 pass  # n_switch
             elif flag == 8:
@@ -186,7 +231,7 @@ class Receiver(NodeType, ABC):
                 self.set_connection_open(False)
                 self.inc_curr_message_received_packets(index=8)
                 if not self.is_fin_sent():
-                    self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
+                    self.send_packet(create_packet(flag=8, seq_num=seq_num, payload=b''))
                     self.inc_curr_message_sent_packets(index=8)
                 self.shutdown()
             elif flag == 9:
@@ -225,7 +270,8 @@ class Receiver(NodeType, ABC):
             current_time = time.time()
             if self.__last_keep_alive_time is not None and \
                     current_time - self.__last_keep_alive_time > TIMEOUT_INTERVAL_RECEIVER:
-                print("Keep-alive timeout")
+                print("Keep-alive timeout\n"
+                      ">> ", end="")
                 self.shutdown()
                 return
 
@@ -243,10 +289,11 @@ class Receiver(NodeType, ABC):
             # Update the bool value
             self.__curr_message_status[seq_num] = (data, True)
 
-    def rebuild_data(self, is_file: bool = False) -> bytes:
+    def rebuild_data(self, is_file: bool = False, f_name_size: int = 0) -> bytes:
         whole_data = b''
         for seq_num, data_tuple in self.__curr_message_status.items():
-            if is_file is True and seq_num == 1:
+            if is_file is True and f_name_size > 0:
+                f_name_size -= 1
                 continue
             data, _ = data_tuple
             whole_data += data
@@ -258,16 +305,23 @@ class Receiver(NodeType, ABC):
         self.init_curr_message_received_packets()
         self.init_curr_message_sent_packets()
         if self.__curr_message_isfile:
-            file_name = os.path.basename(self.__curr_message_status[1][0].decode(encoding='utf-8'))
+            file_name = ""
+            for i in range(1, 1 + self.__curr_message_f_name_size):
+                file_name += self.__curr_message_status[i][0].decode(encoding='utf-8')
+            file_name = file_name
             location = "./received_files/"
-            self.write_file(location=location, file_name=file_name, content=self.rebuild_data(is_file=True))
+            abs_path = self.write_file(location=location,
+                                       file_name=file_name,
+                                       content=self.rebuild_data(is_file=True,
+                                                                 f_name_size=self.__curr_message_f_name_size))
             print(f">> Received a file '{file_name}'\n"
-                  f"   Stored in: {os.path.abspath(file_name)}\n"
+                  f"   Stored path: {abs_path}\n"
                   f">> ", end="")
         else:
             text = self.rebuild_data().decode(encoding='utf-8')
             print(f">> Received message '{text}'\n"
                   f">> ", end="")
+        self.__curr_message_f_name_size = 0
         self.__curr_message_info_printed = False
         self.__curr_message_has_last = False
         self.__curr_message_isfile = False
