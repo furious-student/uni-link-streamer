@@ -10,6 +10,7 @@ from node_type import *
 # Constants
 TIMEOUT_INTERVAL_SENDER = 5  # Timeout interval for keep-alive mechanism in seconds
 MAX_RETRIES = 3  # Maximum number of retries for keep-alive mechanism
+MAX_SEQ_NUM = 268_435_455
 
 
 def message_to_bytes(message: str) -> bytes:
@@ -30,15 +31,16 @@ class Sender(NodeType, ABC):
     __response_received_event: threading.Event
 
     def __init__(self, dst_ip: str, dst_port: int,
+                 src_ip="169.254.56.16", src_port=2000,
                  curr_message_received_packets: list[int] = None,
                  curr_message_sent_packets: list[int] = None,
                  connection_open: bool = False
                  ):
-        super().__init__(dst_ip=dst_ip, dst_port=dst_port, src_ip="127.0.0.1", src_port=1234,
+        super().__init__(dst_ip=dst_ip, dst_port=dst_port, src_ip=src_ip, src_port=src_port,
                          curr_message_received_packets=curr_message_received_packets,
                          curr_message_sent_packets=curr_message_sent_packets,
                          connection_open=connection_open)
-        self.__frag_size = 10
+        self.__frag_size = 1466
         self.__keep_alive_timer = None
         self.__keep_alive_retries = 0
         self.__response_received_event = threading.Event()
@@ -59,7 +61,7 @@ class Sender(NodeType, ABC):
             self.start_keep_alive()
 
         if soft is True:
-            print(">> Switched to Sender")
+            print("   Switched to Sender")
         else:
             print(">> Sender is up")
         print(f"   Messages will be send over to {self.get_dst_address()}")
@@ -73,7 +75,7 @@ class Sender(NodeType, ABC):
         while not self.is_shutdown_event_set():
             self.listen_input()
             if self.get_switch_state() is not None and self.is_switch_sent():
-                self.shutdown()
+                self.shutdown(soft=True)
 
         # wait until thread finish
         listen_thread.join()
@@ -105,11 +107,15 @@ class Sender(NodeType, ABC):
         return packets
 
     def send_all_packets(self, packets: List[bytes]) -> None:
+        if len(packets) > 268_435_455:
+            print(">> Cannon send message because of too many packets. Try increasing the fragment size or sending "
+                  "smaller file.")
+            return
         self.map_packets(packets=packets)
         self.init_curr_message_received_packets()
         self.init_curr_message_sent_packets()
         # send INIT packet (must be acked)
-        while self.__curr_message_status[0][1] is False:
+        while self.__curr_message_status[0][1] is False and not self.is_shutdown_event_set():
             self.send_packet(packet=packets[0])
             self.inc_curr_message_sent_packets(index=11)
             # Wait for the response
@@ -119,6 +125,8 @@ class Sender(NodeType, ABC):
         # send rest
         number = 0
         for pkt in packets:
+            if self.is_shutdown_event_set():
+                break
             # skip the init packet as it has already been sent
             if number == 0:
                 number += 1
@@ -129,8 +137,10 @@ class Sender(NodeType, ABC):
             self.send_packet(pkt)
             self.inc_curr_message_sent_packets(index=2)
             number += 1
+            if number % 500 == 0:
+                time.sleep(2)
         # keep sending unacked packets until all are acked
-        while self.has_missing_packet():
+        while self.has_missing_packet() and not self.is_shutdown_event_set():
             self.resend_unacked()
         self.print_received_packet_stats()
         self.print_sent_packet_stats()
@@ -156,7 +166,7 @@ class Sender(NodeType, ABC):
         packets = [zero_packet] + packets
         self.send_all_packets(packets=packets)
 
-    def send_text(self, input_message: str) -> None:
+    def send_text(self, input_message: str, corrupt: bool = False) -> None:
         b_message = message_to_bytes(input_message)
         data_packets = self.create_packets(flag=2, data=b_message, init_seq_num=1)
         zero_packet = create_packet(11, 0, (len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False))
@@ -164,7 +174,7 @@ class Sender(NodeType, ABC):
         self.send_all_packets(data_packets)
 
     def listen_input(self) -> None:
-        rlist, _, _ = select.select([sys.stdin], [], [], 5)
+        rlist, _, _ = select.select([sys.stdin], [], [], 1)
         if not rlist:
             return
 
@@ -208,6 +218,7 @@ class Sender(NodeType, ABC):
             self.inc_curr_message_sent_packets(index=8)
         elif cmd == "fsize!":
             self.__frag_size = int(arg)
+            print(">> ", end="")
         elif cmd == "syn!":
             if self.is_connection_open():
                 print(">> Connection is already opened\n>> ", end="")
@@ -220,6 +231,11 @@ class Sender(NodeType, ABC):
                 print(f">> No argument specified for command {cmd}\n>> ", end="")
                 return
             self.send_text(input_message=arg)
+        elif cmd == "m!":
+            if arg is None:
+                print(f">> No argument specified for command '{cmd}'\n>> ", end="")
+                return
+            self.send_text(input_message=arg, corrupt=True)
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"
@@ -245,13 +261,16 @@ class Sender(NodeType, ABC):
                   f"               is an integer taken as a second argument, e.g. \n"
                   f"               'fsize! 500' sets the fragment size to 500 bytes.\n"
                   f"               The argument must be from interval <1, 1466>.\n"
-                  f"               Defaults to 10.\n"
+                  f"               Defaults to 1466.\n"
                   f"   'help!':    Displays this.\n"
                   f"   'info!':    Displays info about this node.\n"
                   f"   'm!':       Same as plain text (see bellow). All following\n"
                   f"               words are interpreted as a textual message to be\n"
                   f"               sent over to the other node. If no words follow,\n"
                   f"               nothing happens.\n"
+                  f"   'merr!':    Same as 'm!' but deliberately corrupts a random\n"
+                  f"               DATA packet (by modifying its check sum) to test\n"
+                  f"               the functionality of the ARQ mechanism.\n"
                   f"   'switch!':  Sends a signal to the other node that you want\n"
                   f"               to switch roles.\n"
                   f"   'syn!':     Sends a signal to the other node that you want to\n"
@@ -271,6 +290,7 @@ class Sender(NodeType, ABC):
                 # Set a timeout for the recvfrom operation
                 self.get_socket().settimeout(1.0)  # 1.0 second timeout
                 flag, seq_num, crc_check, data, src_addr = self.receive_packet()
+                self.__keep_alive_retries = 0
                 # Reset the timeout to None after a successful reception
                 self.get_socket().settimeout(None)
             except socket.timeout:
@@ -345,7 +365,7 @@ class Sender(NodeType, ABC):
         if self.is_shutdown_event_set():
             return
         if self.__keep_alive_retries < MAX_RETRIES:
-            # print("Sending keep-alive message.\n>> ", end="")
+            # print(">> Sending keep-alive message.\n>> ", end="")
             # Send keep-alive message
             self.send_packet(create_packet(flag=5, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=5)

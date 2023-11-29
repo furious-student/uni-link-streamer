@@ -53,7 +53,7 @@ class Receiver(NodeType, ABC):
             timeout_thread.start()
 
         if soft is True:
-            print(">> Switched to Receiver")
+            print("   Switched to Receiver")
         else:
             print(">> Receiver is up")
         print(f"   Receiver listens on {self.get_src_address()}")
@@ -70,7 +70,7 @@ class Receiver(NodeType, ABC):
         while not self.is_shutdown_event_set():
             self.listen_input()
             if self.get_switch_state() is not None and self.is_switch_sent():
-                self.shutdown()
+                self.shutdown(spaces=True, soft=True)
 
         # wait until threads finish
         listen_thread.join()
@@ -80,7 +80,7 @@ class Receiver(NodeType, ABC):
         return self.get_switch_state()
 
     def listen_input(self) -> None:
-        rlist, _, _ = select.select([sys.stdin], [], [], 5)
+        rlist, _, _ = select.select([sys.stdin], [], [], 1)
         if not rlist:
             return
 
@@ -167,6 +167,7 @@ class Receiver(NodeType, ABC):
                 # Set a timeout for the recvfrom operation
                 self.get_socket().settimeout(2)
                 flag, seq_num, crc_check, data, src_addr = self.receive_packet()
+                self.__last_keep_alive_time = time.time()
                 # Reset the timeout to None after a successful reception
                 self.get_socket().settimeout(None)
                 if flag != 5:
@@ -238,7 +239,7 @@ class Receiver(NodeType, ABC):
                 if not self.is_fin_sent():
                     self.send_packet(create_packet(flag=8, seq_num=seq_num, payload=b''))
                     self.inc_curr_message_sent_packets(index=8)
-                self.shutdown()
+                self.shutdown(spaces=True)
             elif flag == 9:
                 pass  # n_fin
             elif flag == 10:
@@ -277,7 +278,7 @@ class Receiver(NodeType, ABC):
                     current_time - self.__last_keep_alive_time > TIMEOUT_INTERVAL_RECEIVER:
                 print("Keep-alive timeout\n"
                       ">> ", end="")
-                self.shutdown()
+                self.shutdown(spaces=True)
                 return
 
             # Sleep for a short interval before checking again
@@ -302,6 +303,7 @@ class Receiver(NodeType, ABC):
                 continue
             data, _ = data_tuple
             whole_data += data
+        print(f">> Total size of received data: {len(whole_data)}B")
         return whole_data
 
     def handle_message(self) -> None:

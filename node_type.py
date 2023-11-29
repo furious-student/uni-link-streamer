@@ -176,7 +176,10 @@ class NodeType(ABC):
         return self.__switch_sent
 
     def send_packet(self, packet: bytes) -> None:
-        self.__node_socket.sendto(packet, self.get_dst_address())
+        try:
+            self.__node_socket.sendto(packet, self.get_dst_address())
+        except OSError:
+            return
 
     def receive_packet(self) -> Tuple[int, int, bool, bytes, Tuple[str, int]]:
         response, src_addr = self.__node_socket.recvfrom(1472)
@@ -185,14 +188,16 @@ class NodeType(ABC):
         crc_check = check_crc(crc, response[:4] + response[6:])
         return flag, seq_num, crc_check, data, src_addr
 
-    def shutdown(self) -> None:
-        print("   Shutting down...")
+    def shutdown(self, spaces: bool = False, soft: bool = False) -> None:
+        if spaces is True:
+            print("   ", end="")
         self.__connection_open = False
         # Set the shutdown event to signal other threads to terminate
         self.__shutdown_event.set()
-        print("   Connection closed\n"
-              "   Press 'Enter' to exit\n"
-              ">> ", end="")
+        if soft is False:
+            print("   Shutting down...")
+            print("   Connection closed\n"
+                  ">> ", end="")
 
     def init_curr_message_received_packets(self) -> None:
         syns = self.__curr_message_received_packets[0]

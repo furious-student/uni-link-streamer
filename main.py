@@ -14,14 +14,15 @@ def main():
         if next_node is None:
             choice = input("Input node type (sender|receiver) or 'exit!': ")
         else:
-            print("Switching roles...")
             node_type, node_socket, dst_addr, src_addr, received_packets, sent_packets = next_node
             if node_type == "sender":
+                print(">> Switching roles...")
                 next_node = create_sender(dst_addr=dst_addr,
                                           src_addr=src_addr,
                                           curr_message_received_packets=received_packets,
                                           curr_message_sent_packets=sent_packets)
             elif node_type == "receiver":
+                print("Switching roles...")
                 next_node = create_receiver(dst_addr=dst_addr,
                                             src_addr=src_addr,
                                             curr_message_received_packets=received_packets,
@@ -33,9 +34,11 @@ def main():
             next_node = next_node.start(soft=True, node_socket=node_socket)
             continue
         if choice == "sender":
-            ip = input("Destination IP: ")
-            port = input("Destination Port: ")
-            node = Sender(dst_ip=ip, dst_port=int(port))
+            src_ip = input("Source IP: ")
+            src_port = input("Source Port: ")
+            dst_ip = input("Destination IP: ")
+            dst_port = input("Destination Port: ")
+            node = Sender(dst_ip=dst_ip, dst_port=int(dst_port), src_ip=src_ip, src_port=int(src_port))
             next_node = node.start()
         elif choice == "receiver":
             ip = input("Source IP: ")
