@@ -59,6 +59,15 @@ def print_packet(flag: int, seq_num: int, crc_check: int):
         print(">> ", end="")
 
 
+def corrupt_packet(packet: bytes) -> bytes:
+    flag, seq_num, crc = parse_header(packet[:6])
+    if crc > 21845:
+        crpt_crc = crc // 3
+    else:
+        crpt_crc = crc * 3
+    return create_header(flag=flag, seq_num=seq_num, crc=crpt_crc) + packet[6:]
+
+
 def calc_crc(fragment_data: bytes) -> int:
     return ccitt_false(fragment_data)
 
@@ -195,7 +204,7 @@ class NodeType(ABC):
         # Set the shutdown event to signal other threads to terminate
         self.__shutdown_event.set()
         if soft is False:
-            print("   Shutting down...")
+            print(" Shutting down...")
             print("   Connection closed\n"
                   ">> ", end="")
 

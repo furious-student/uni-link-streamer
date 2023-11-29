@@ -105,18 +105,20 @@ class Receiver(NodeType, ABC):
     def handle_cmd(self, cmd: str, arg: str) -> None:
         if cmd == "switch!":
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
             self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=6)
             self.set_switch_sent(True)
+            print(">> ", end="")
         elif cmd == "end!":
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=8)
+            print(">> ", end="")
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"

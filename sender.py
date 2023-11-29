@@ -1,4 +1,5 @@
 import os.path
+import random
 import select
 import socket
 import sys
@@ -106,7 +107,7 @@ class Sender(NodeType, ABC):
             init_seq_num += 1
         return packets
 
-    def send_all_packets(self, packets: List[bytes]) -> None:
+    def send_all_packets(self, packets: List[bytes], corrupt: bool = False) -> None:
         if len(packets) > 268_435_455:
             print(">> Cannon send message because of too many packets. Try increasing the fragment size or sending "
                   "smaller file.")
@@ -124,6 +125,9 @@ class Sender(NodeType, ABC):
                 self.__response_received_event.clear()
         # send rest
         number = 0
+        corrupted = -1
+        if corrupt is True:
+            corrupted = random.randint(1, len(packets)-1)
         for pkt in packets:
             if self.is_shutdown_event_set():
                 break
@@ -131,9 +135,8 @@ class Sender(NodeType, ABC):
             if number == 0:
                 number += 1
                 continue
-            # Inject error in every third packet
-            # if number % 3 == 2:
-            #     pkt += b'\xf1'
+            if corrupt is True and number == corrupted:
+                pkt = corrupt_packet(pkt)
             self.send_packet(pkt)
             self.inc_curr_message_sent_packets(index=2)
             number += 1
@@ -156,7 +159,7 @@ class Sender(NodeType, ABC):
                 self.send_packet(packet=packet)
                 self.inc_curr_message_sent_packets(index=2)
 
-    def send_file_data(self, path) -> None:
+    def send_file(self, path: str, corrupt: bool = False) -> None:
         b_file = file_input(file_name=path)
         file_name_packets = self.create_packets(flag=1, init_seq_num=1,
                                                 data=message_to_bytes(os.path.basename(path)))
@@ -164,14 +167,14 @@ class Sender(NodeType, ABC):
         zero_packet = create_packet(flag=11, seq_num=0,
                                     payload=(len(packets) + 1).to_bytes(4, byteorder="big", signed=False))
         packets = [zero_packet] + packets
-        self.send_all_packets(packets=packets)
+        self.send_all_packets(packets=packets, corrupt=corrupt)
 
     def send_text(self, input_message: str, corrupt: bool = False) -> None:
         b_message = message_to_bytes(input_message)
         data_packets = self.create_packets(flag=2, data=b_message, init_seq_num=1)
         zero_packet = create_packet(11, 0, (len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False))
         data_packets = [zero_packet] + data_packets
-        self.send_all_packets(data_packets)
+        self.send_all_packets(data_packets, corrupt=corrupt)
 
     def listen_input(self) -> None:
         rlist, _, _ = select.select([sys.stdin], [], [], 1)
@@ -191,19 +194,24 @@ class Sender(NodeType, ABC):
             self.handle_cmd(cmd=cmd, arg=arg)
         else:
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
             self.send_text(input_message=input_message)
 
     def handle_cmd(self, cmd: str, arg: str) -> None:
         if cmd == "file!":
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
-            self.send_file_data(path=arg)
+            self.send_file(path=arg)
+        elif cmd == "fileerr!":
+            if not self.is_connection_open():
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
+                return
+            self.send_file(path=arg, corrupt=True)
         elif cmd == "switch!":
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
             self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=6)
@@ -211,7 +219,7 @@ class Sender(NodeType, ABC):
             print(">> ", end="")
         elif cmd == "end!":
             if not self.is_connection_open():
-                print(">> Connection is not open\n>> ", end="")
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
@@ -227,11 +235,17 @@ class Sender(NodeType, ABC):
             self.inc_curr_message_sent_packets(index=0)
             print(">> ", end="")
         elif cmd == "m!":
+            if not self.is_connection_open():
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
+                return
             if arg is None:
                 print(f">> No argument specified for command {cmd}\n>> ", end="")
                 return
             self.send_text(input_message=arg)
-        elif cmd == "m!":
+        elif cmd == "merr!":
+            if not self.is_connection_open():
+                print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
+                return
             if arg is None:
                 print(f">> No argument specified for command '{cmd}'\n>> ", end="")
                 return
@@ -256,6 +270,9 @@ class Sender(NodeType, ABC):
                   f"   'file!':    Must have a second argument (a file name) separa-\n"
                   f"               ted with space, e.g. 'file! example.txt'. This \n"
                   f"               command sends a file to the other node.\n"
+                  f"   'fileerr!': Same as 'file!' but deliberately corrupts a random\n"
+                  f"               DATA packet (by modifying its check sum) to test\n"
+                  f"               the functionality of the ARQ mechanism.\n"       
                   f"   'fsize!':   With this command you can set the fragment size\n"
                   f"               in bytes of each packet sent. The fragment size\n"
                   f"               is an integer taken as a second argument, e.g. \n"
