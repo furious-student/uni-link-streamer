@@ -5,6 +5,7 @@ import time
 from typing import Dict
 
 from node_type import *
+from input_checker import open_file
 
 # Constants
 TIMEOUT_INTERVAL_RECEIVER = 15  # Timeout interval for keep-alive mechanism in seconds
@@ -15,9 +16,11 @@ class Receiver(NodeType, ABC):
     __curr_message_isfile: bool
     __curr_message_f_name_size: int
     __curr_message_has_last: bool
+    __curr_message_fsize: int
     __last_keep_alive_time: time
     __curr_message_info_printed: bool
     __start_keepalive: bool
+    __files_storage_location: str
 
     def __init__(self, src_ip: str, src_port: int,
                  curr_message_received_packets: list[int] = None,
@@ -34,6 +37,8 @@ class Receiver(NodeType, ABC):
         self.__curr_message_has_last = False
         self.__last_keep_alive_time = None
         self.__start_keepalive = True
+        self.__files_storage_location = "./received_files/"
+        self.__curr_message_fsize = 0
 
     def set_dst_address(self, dst_ip, dst_port):
         super().set_dst_address(dst_ip=dst_ip, dst_port=dst_port)
@@ -56,9 +61,13 @@ class Receiver(NodeType, ABC):
             print("   Switched to Receiver")
         else:
             print(">> Receiver is up")
-        print(f"   Receiver listens on {self.get_src_address()}")
-        print(f"   To display all available commands, type 'help!'\n"
-              f">> ", end="")
+            print(f"   Receiver listens on '{self.get_src_address()[0]}:{self.get_src_address()[1]}'\n"
+                  f"   Wait until the Sender initiates the connection\n"
+                  f"   To display information about this node, type 'info!'\n"
+                  f"   If the connection is opened: \n"
+                  f"      To switch the roles (become Sender), type 'switch!'\n"
+                  f"      To terminate the connection, type 'end!'\n"
+                  f"   To display all available commands, type 'help!'")
 
         # Start the listening thread
         listen_thread = threading.Thread(target=self.listen)
@@ -67,6 +76,9 @@ class Receiver(NodeType, ABC):
         message_check_thread = threading.Thread(target=self.check_message_status)
         message_check_thread.start()
 
+        self.create_folder(self.__files_storage_location)
+
+        print(">> ", end="")
         while not self.is_shutdown_event_set():
             self.listen_input()
             if self.get_switch_state() is not None and self.is_switch_sent():
@@ -78,6 +90,16 @@ class Receiver(NodeType, ABC):
         if self.get_switch_state() is None:
             self.get_socket().close()
         return self.get_switch_state()
+
+    def create_folder(self, folder_name):
+        try:
+            if not os.path.exists(folder_name):
+                os.makedirs(folder_name)
+                print(f">> Folder '{folder_name}' created.")
+            else:
+                print(f">> Folder '{folder_name}' already exists.")
+        except OSError as e:
+            print(f">> Error creating folder '{folder_name}': {e}")
 
     def listen_input(self) -> None:
         rlist, _, _ = select.select([sys.stdin], [], [], 1)
@@ -93,11 +115,8 @@ class Receiver(NodeType, ABC):
         command = is_command(input_message)
         if command[0]:
             cmd = command[1]
-            if command[2] is None:
-                args = None
-            else:
-                args = command[2][0]
-            self.handle_cmd(cmd=cmd, arg=args)
+            arg = command[2]
+            self.handle_cmd(cmd=cmd, arg=arg)
         else:
             print(f">> Command '{command[1]}' is not a valid command\n"
                   f">> ", end="")
@@ -107,6 +126,7 @@ class Receiver(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
+            print(">> ", end="")
             self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=6)
             self.set_switch_sent(True)
@@ -115,17 +135,25 @@ class Receiver(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
+            print(">> ", end="")
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=8)
+        elif cmd == "fsl!":  # fsl = file storage location
+            if arg is None:
+                print(f">> No argument specified for command '{cmd}'\n>> ", end="")
+                return
+            self.__files_storage_location = arg
+            self.create_folder(arg)
             print(">> ", end="")
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"
-                  f"   node_type:       {self.__class__}\n"
-                  f"   dst_address:     {self.get_dst_address()}\n"
-                  f"   src_address:     {self.get_src_address()}\n"
-                  f"   connection_open: {self.is_connection_open()}\n"
+                  f"   node_type:       Receiver\n"
+                  f"   dst_address:     '{self.get_dst_address()}'\n"
+                  f"   src_address:     '{self.get_src_address()}'\n"
+                  f"   store_files_at:  '{self.__files_storage_location}'\n"
+                  f"   connection_open: '{self.is_connection_open()}'\n"
                   f"   ---\n"
                   f">> ", end="")
         elif cmd == "help!":
@@ -135,6 +163,10 @@ class Receiver(NodeType, ABC):
                   f"               close the connection. If a FIN is received from\n"
                   f"               the other node, the connection is closed and the\n"
                   f"               program terminates.\n"
+                  f"   'fsl!':     Changes the path to the folder where a received\n"
+                  f"               files will be stored. If the specified folder does\n"
+                  f"               not exists, the program will try to create it.\n"
+                  f"               Default folder for received files is '{self.__files_storage_location}'.\n"
                   f"   'help!':    Displays this.\n"
                   f"   'info!':    Displays info about this node.\n"
                   f"   'switch!':  Sends a signal to the other node that you want\n"
@@ -157,7 +189,9 @@ class Receiver(NodeType, ABC):
                 new_file_name = f"{base_name}_{counter}{extension}"
             path = new_file_name
         # Create the file
-        file = open(path, 'wb')
+        file = open_file(path=path, mode='wb')
+        if file is None:
+            return "None"
         file.write(content)
         file.close()
         return os.path.abspath(path)
@@ -175,7 +209,7 @@ class Receiver(NodeType, ABC):
                 if flag != 5:
                     if flag == 1 or flag == 2 or flag == 10:
                         print("   ", end="")
-                    print_packet(flag, seq_num, crc_check)
+                    print_packet(flag, seq_num, crc_check, payload=data)
             except socket.timeout:
                 self.get_socket().settimeout(None)
                 continue
@@ -253,11 +287,12 @@ class Receiver(NodeType, ABC):
                 self.__curr_message_has_last = True
             elif flag == 11:
                 # init/zero packet
-                packets_len = int.from_bytes(data, byteorder='big', signed=False)
+                packets_len = int.from_bytes(data[:4], byteorder='big', signed=False)
                 self.init_message_status(packets_len)
                 self.send_packet(create_packet(flag=3, seq_num=seq_num, payload=b''))
                 self.inc_curr_message_received_packets(index=11)
                 self.inc_curr_message_sent_packets(index=3)
+                self.__curr_message_fsize = int.from_bytes(data[4:], byteorder='big', signed=False)
 
     def check_message_status(self) -> None:
         while not self.is_shutdown_event_set():
@@ -305,12 +340,14 @@ class Receiver(NodeType, ABC):
                 continue
             data, _ = data_tuple
             whole_data += data
-        print(f">> Total size of received data: {len(whole_data)}B")
+        print(f">> Received: {len(whole_data)}B of data\n"
+              f"   fragment_size set to: {self.__curr_message_fsize}B")
         return whole_data
 
     def handle_message(self) -> None:
+        print(">> PACKET STATS:")
         self.print_received_packet_stats()
-        self.print_sent_packet_stats()
+        # self.print_sent_packet_stats()
         self.init_curr_message_received_packets()
         self.init_curr_message_sent_packets()
         if self.__curr_message_isfile:
@@ -318,12 +355,13 @@ class Receiver(NodeType, ABC):
             for i in range(1, 1 + self.__curr_message_f_name_size):
                 file_name += self.__curr_message_status[i][0].decode(encoding='utf-8')
             file_name = file_name
-            location = "./received_files/"
+            location = self.__files_storage_location + "/"
             abs_path = self.write_file(location=location,
                                        file_name=file_name,
                                        content=self.rebuild_data(is_file=True,
                                                                  f_name_size=self.__curr_message_f_name_size))
             print(f">> Received a file '{file_name}'\n"
+                  f"   File name size: {len(file_name)}B\n"
                   f"   Stored path: {abs_path}\n"
                   f">> ", end="")
         else:

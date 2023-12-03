@@ -2,6 +2,7 @@ from typing import Union, Optional, Tuple, List
 from sender import Sender
 from receiver import Receiver
 from node_crafter import create_sender, create_receiver
+from input_checker import while_not_valid_ip, while_not_valid_number
 
 
 def main():
@@ -34,33 +35,17 @@ def main():
             next_node = next_node.start(soft=True, node_socket=node_socket)
             continue
         if choice == "sender":
-            src_ip = input("Source IP: ")
-            src_port = input("Source Port: ")
-            dst_ip = input("Destination IP: ")
-            dst_port = input("Destination Port: ")
+            src_ip = while_not_valid_ip("Source IP: ")
+            src_port = while_not_valid_number("Source Port: ", lower=1024, upper=65535)
+            dst_ip = while_not_valid_ip("Destination IP: ")
+            dst_port = while_not_valid_number("Destination Port: ", lower=1024, upper=65535)
             node = Sender(dst_ip=dst_ip, dst_port=int(dst_port), src_ip=src_ip, src_port=int(src_port))
             next_node = node.start()
         elif choice == "receiver":
-            ip = input("Source IP: ")
-            port = input("Source Port: ")
+            ip = while_not_valid_ip("Source IP: ")
+            port = while_not_valid_number("Source Port: ", lower=1024, upper=65535)
             node = Receiver(src_ip=ip, src_port=int(port))
             next_node = node.start()
-
-
-def try_to_int(value_to_int: str) -> Union[str, int]:
-    original_src_ip = value_to_int
-    try:
-        output = int(original_src_ip)
-    except ValueError:
-        output = original_src_ip
-    return output
-
-
-def prettify_hex(hex_str: str) -> str:
-    return_str = ""
-    for byte in range(0, len(hex_str), 2):
-        return_str += str(byte) + " "
-    return return_str
 
 
 if __name__ == '__main__':

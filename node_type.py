@@ -53,19 +53,19 @@ def create_packet(flag: int, seq_num: int, payload: bytes) -> bytes:
     return packet
 
 
-def print_packet(flag: int, seq_num: int, crc_check: int):
-    print(f"flag: {flag} | seq_num: {seq_num} | crc_check: {crc_check}")
+def print_packet(flag: int, seq_num: int, crc_check: int, payload: bytes):
+    print(f"flag: {flag} | seq_num: {seq_num} | crc_check: {crc_check} | "
+          f"payload_size: {len(payload)}B + header_size: 4B")
     if flag == 0:
         print(">> ", end="")
 
 
 def corrupt_packet(packet: bytes) -> bytes:
-    flag, seq_num, crc = parse_header(packet[:6])
-    if crc > 21845:
-        crpt_crc = crc // 3
-    else:
-        crpt_crc = crc * 3
-    return create_header(flag=flag, seq_num=seq_num, crc=crpt_crc) + packet[6:]
+    header = packet[:6]
+    payload = packet[6:]
+    corrupted_byte = bytes([(payload[0] + 10) % 256])
+    payload = corrupted_byte + payload[1:]
+    return header + payload
 
 
 def calc_crc(fragment_data: bytes) -> int:
@@ -204,7 +204,7 @@ class NodeType(ABC):
         # Set the shutdown event to signal other threads to terminate
         self.__shutdown_event.set()
         if soft is False:
-            print(" Shutting down...")
+            print("Shutting down...")
             print("   Connection closed\n"
                   ">> ", end="")
 
@@ -223,27 +223,27 @@ class NodeType(ABC):
     def print_sent_packet_stats(self) -> None:
         packets_stats = self.__curr_message_sent_packets
         ack_and_data = sum(packets_stats[1:5] + packets_stats[6:8] + packets_stats[9:])
-        print(f">> Sent: {ack_and_data} packets (without syn, keep-alive and fin):\n"
-              f"   {packets_stats[0]} SYN packets\n"
-              f"   {packets_stats[11]} INIT packet\n"
-              f"   {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
-              f"   {packets_stats[3]} ACK packets\n"
-              f"   {packets_stats[4]} N_ACK packets\n"
-              f"   {packets_stats[5]} KEEP-ALIVE packets\n"
-              f"   {packets_stats[8]} FIN packets")
+        print(f"  Sent: {ack_and_data} packets (without syn, keep-alive and fin):\n"
+              f"    {packets_stats[0]} SYN packets\n"
+              f"    {packets_stats[11]} INIT packet\n"
+              f"    {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
+              f"    {packets_stats[3]} ACK packets\n"
+              f"    {packets_stats[4]} N_ACK packets\n"
+              f"    {packets_stats[5]} KEEP-ALIVE packets\n"
+              f"    {packets_stats[8]} FIN packets")
 
     def print_received_packet_stats(self) -> None:
         packets_stats = self.__curr_message_received_packets
         ack_and_data = sum(packets_stats[1:5] + packets_stats[6:8] + packets_stats[9:])
-        print(f">> Received: {ack_and_data} packets (without syn, keep-alive and fin):\n"
-              f"   {packets_stats[0]} SYN packets\n"
-              f"   {packets_stats[11]} INIT packet\n"
-              f"   {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
-              f"   {packets_stats[3]} ACK packets\n"
-              f"   {packets_stats[4]} N_ACK packets\n"
-              f"   {packets_stats[12]} corrupted packets\n"
-              f"   {packets_stats[5]} KEEP-ALIVE packets\n"
-              f"   {packets_stats[8]} FIN packets")
+        print(f"  Received: {ack_and_data} packets (without syn, keep-alive and fin):\n"
+              f"    {packets_stats[0]} SYN packets\n"
+              f"    {packets_stats[11]} INIT packet\n"
+              f"    {packets_stats[1] + packets_stats[2] + packets_stats[10]} DATA packets\n"
+              f"    {packets_stats[3]} ACK packets\n"
+              f"    {packets_stats[4]} N_ACK packets\n"
+              f"    {packets_stats[12]} corrupted packets\n"
+              f"    {packets_stats[5]} KEEP-ALIVE packets\n"
+              f"    {packets_stats[8]} FIN packets")
 
     def inc_curr_message_received_packets(self, index: int) -> None:
         self.__curr_message_received_packets[index] += 1

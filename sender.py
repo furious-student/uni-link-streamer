@@ -1,11 +1,11 @@
 import os.path
 import random
 import select
-import socket
 import sys
 import time
 from typing import Dict
 
+from input_checker import open_file, as_number_from_range
 from node_type import *
 
 # Constants
@@ -19,7 +19,9 @@ def message_to_bytes(message: str) -> bytes:
 
 
 def file_input(file_name: str) -> bytes:
-    file = open(file_name, mode='rb')  # b means binary
+    file = open_file(path=file_name, mode='rb')  # b means binary
+    if file is None:
+        return b''
     file_data = file.read()
     return file_data
 
@@ -65,8 +67,13 @@ class Sender(NodeType, ABC):
             print("   Switched to Sender")
         else:
             print(">> Sender is up")
-        print(f"   Messages will be send over to {self.get_dst_address()}")
-        print(f"   To display all available commands, type 'help!'")
+            print(f"   Messages will be send over to '{self.get_dst_address()[0]}:{self.get_dst_address()[1]}'\n"
+                  f"   To connect to the Receiver, type 'syn!'\n"
+                  f"   To display information about this node, type 'info!'\n"
+                  f"   If the connection is opened: \n"
+                  f"      To switch the roles (become Receiver), type 'switch!'\n"
+                  f"      To terminate the connection, type 'end!'\n"
+                  f"   To display all available commands, type 'help!'")
 
         # Start the listening thread
         listen_thread = threading.Thread(target=self.listen)
@@ -108,6 +115,7 @@ class Sender(NodeType, ABC):
         return packets
 
     def send_all_packets(self, packets: List[bytes], corrupt: bool = False) -> None:
+        data_size = 0
         if len(packets) > 268_435_455:
             print(">> Cannon send message because of too many packets. Try increasing the fragment size or sending "
                   "smaller file.")
@@ -127,7 +135,7 @@ class Sender(NodeType, ABC):
         number = 0
         corrupted = -1
         if corrupt is True:
-            corrupted = random.randint(1, len(packets)-1)
+            corrupted = random.randint(1, len(packets) - 1)
         for pkt in packets:
             if self.is_shutdown_event_set():
                 break
@@ -140,12 +148,16 @@ class Sender(NodeType, ABC):
             self.send_packet(pkt)
             self.inc_curr_message_sent_packets(index=2)
             number += 1
+            data_size += len(pkt) - 6
             if number % 500 == 0:
                 time.sleep(2)
         # keep sending unacked packets until all are acked
         while self.has_missing_packet() and not self.is_shutdown_event_set():
             self.resend_unacked()
-        self.print_received_packet_stats()
+        print(f">> Sending: {data_size}B of data.\n"
+              f"   fragment_size set to: {self.__frag_size}B")
+        print(">> PACKET STATS:")
+        # self.print_received_packet_stats()
         self.print_sent_packet_stats()
         print(">> ", end="")
 
@@ -161,18 +173,25 @@ class Sender(NodeType, ABC):
 
     def send_file(self, path: str, corrupt: bool = False) -> None:
         b_file = file_input(file_name=path)
+        if b_file == b'':
+            print(">> ", end="")
+            return
+        print(f">> Sending file '{os.path.abspath(path)}'")
         file_name_packets = self.create_packets(flag=1, init_seq_num=1,
                                                 data=message_to_bytes(os.path.basename(path)))
         packets = file_name_packets + self.create_packets(flag=2, data=b_file, init_seq_num=len(file_name_packets) + 1)
         zero_packet = create_packet(flag=11, seq_num=0,
-                                    payload=(len(packets) + 1).to_bytes(4, byteorder="big", signed=False))
+                                    payload=(len(packets) + 1).to_bytes(4, byteorder="big", signed=False) +
+                                            self.__frag_size.to_bytes(2, byteorder="big", signed=False))
         packets = [zero_packet] + packets
         self.send_all_packets(packets=packets, corrupt=corrupt)
 
     def send_text(self, input_message: str, corrupt: bool = False) -> None:
         b_message = message_to_bytes(input_message)
         data_packets = self.create_packets(flag=2, data=b_message, init_seq_num=1)
-        zero_packet = create_packet(11, 0, (len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False))
+        zero_packet = create_packet(flag=11, seq_num=0,
+                                    payload=(len(data_packets) + 1).to_bytes(4, byteorder="big", signed=False) +
+                                            self.__frag_size.to_bytes(2, byteorder="big", signed=False))
         data_packets = [zero_packet] + data_packets
         self.send_all_packets(data_packets, corrupt=corrupt)
 
@@ -203,16 +222,23 @@ class Sender(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
+            if arg is None:
+                print(f">> No argument specified for command '{cmd}'\n>> ", end="")
+                return
             self.send_file(path=arg)
         elif cmd == "fileerr!":
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
+                return
+            if arg is None:
+                print(f">> No argument specified for command '{cmd}'\n>> ", end="")
                 return
             self.send_file(path=arg, corrupt=True)
         elif cmd == "switch!":
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
+            print(">> ", end="")
             self.send_packet(create_packet(flag=6, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=6)
             self.set_switch_sent(True)
@@ -221,11 +247,19 @@ class Sender(NodeType, ABC):
             if not self.is_connection_open():
                 print(">> Connection is not opened. Use 'syn!' to open the connection\n>> ", end="")
                 return
+            print(">> ", end="")
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=8)
         elif cmd == "fsize!":
-            self.__frag_size = int(arg)
+            if arg is None:
+                print(f">> No argument specified for command '{cmd}'\n>> ", end="")
+                return
+            num = as_number_from_range(target=arg, lower=1, upper=1466)
+            if num[1] != 0:
+                print(f">> Argument must be an integer from range <1;1466> but is '{num[0]}'\n>> ", end="")
+                return
+            self.__frag_size = int(num[0])
             print(">> ", end="")
         elif cmd == "syn!":
             if self.is_connection_open():
@@ -253,11 +287,11 @@ class Sender(NodeType, ABC):
         elif cmd == "info!":
             print(f">> INFO\n"
                   f"   ---\n"
-                  f"   node_type:       {self.__class__}\n"
-                  f"   fragment_size:   {self.__frag_size}\n"
-                  f"   dst_address:     {self.get_dst_address()}\n"
-                  f"   src_address:     {self.get_src_address()}\n"
-                  f"   connection_open: {self.is_connection_open()}\n"
+                  f"   node_type:       Sender\n"
+                  f"   fragment_size:   '{self.__frag_size}B'\n"
+                  f"   dst_address:     '{self.get_dst_address()}'\n"
+                  f"   src_address:     '{self.get_src_address()}'\n"
+                  f"   connection_open: '{self.is_connection_open()}'\n"
                   f"   ---\n"
                   f">> ", end="")
         elif cmd == "help!":
@@ -267,12 +301,12 @@ class Sender(NodeType, ABC):
                   f"               close the connection. If a FIN is received from\n"
                   f"               the other node, the connection is closed and the\n"
                   f"               program terminates.\n"
-                  f"   'file!':    Must have a second argument (a file name) separa-\n"
+                  f"   'file!':    Must have a second argument (a file path) separa-\n"
                   f"               ted with space, e.g. 'file! example.txt'. This \n"
                   f"               command sends a file to the other node.\n"
                   f"   'fileerr!': Same as 'file!' but deliberately corrupts a random\n"
-                  f"               DATA packet (by modifying its check sum) to test\n"
-                  f"               the functionality of the ARQ mechanism.\n"       
+                  f"               DATA packet (by modifying its payload) to test\n"
+                  f"               the functionality of the ARQ mechanism.\n"
                   f"   'fsize!':   With this command you can set the fragment size\n"
                   f"               in bytes of each packet sent. The fragment size\n"
                   f"               is an integer taken as a second argument, e.g. \n"
@@ -286,7 +320,7 @@ class Sender(NodeType, ABC):
                   f"               sent over to the other node. If no words follow,\n"
                   f"               nothing happens.\n"
                   f"   'merr!':    Same as 'm!' but deliberately corrupts a random\n"
-                  f"               DATA packet (by modifying its check sum) to test\n"
+                  f"               DATA packet (by modifying its payload) to test\n"
                   f"               the functionality of the ARQ mechanism.\n"
                   f"   'switch!':  Sends a signal to the other node that you want\n"
                   f"               to switch roles.\n"
@@ -299,7 +333,8 @@ class Sender(NodeType, ABC):
                   f"   ---\n"
                   f">> ", end="")
         else:
-            print(f">> Command '{cmd}' is not a valid command\n>> ", end="")
+            print(f">> Command '{cmd}' is not a valid command."
+                  f"   To display all available commands, type 'help!'\n>> ", end="")
 
     def listen(self):
         while not self.is_shutdown_event_set():
