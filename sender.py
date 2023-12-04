@@ -251,7 +251,7 @@ class Sender(NodeType, ABC):
             self.set_fin_sent(True)
             self.send_packet(create_packet(flag=8, seq_num=0, payload=b''))
             self.inc_curr_message_sent_packets(index=8)
-        elif cmd == "fsize!":
+        elif cmd == "psize!":
             if arg is None:
                 print(f">> No argument specified for command '{cmd}'\n>> ", end="")
                 return
@@ -307,10 +307,10 @@ class Sender(NodeType, ABC):
                   f"   'fileerr!': Same as 'file!' but deliberately corrupts a random\n"
                   f"               DATA packet (by modifying its payload) to test\n"
                   f"               the functionality of the ARQ mechanism.\n"
-                  f"   'fsize!':   With this command you can set the fragment size\n"
-                  f"               in bytes of each packet sent. The fragment size\n"
+                  f"   'psize!':   With this command you can set the payload size\n"
+                  f"               in bytes of each packet sent. The payload size\n"
                   f"               is an integer taken as a second argument, e.g. \n"
-                  f"               'fsize! 500' sets the fragment size to 500 bytes.\n"
+                  f"               'psize! 500' sets the payload size to 500 bytes.\n"
                   f"               The argument must be from interval <1, 1466>.\n"
                   f"               Defaults to 1466.\n"
                   f"   'help!':    Displays this.\n"
