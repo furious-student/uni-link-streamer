@@ -55,7 +55,7 @@ def create_packet(flag: int, seq_num: int, payload: bytes) -> bytes:
 
 def print_packet(flag: int, seq_num: int, crc_check: int, payload: bytes):
     print(f"flag: {flag} | seq_num: {seq_num} | crc_check: {crc_check} | "
-          f"payload_size: {len(payload)}B + header_size: 4B")
+          f"payload_size: {len(payload)}B + header_size: 6B")
     if flag == 0:
         print(">> ", end="")
 

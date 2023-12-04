@@ -300,6 +300,7 @@ class Receiver(NodeType, ABC):
             if self.__curr_message_has_last and not self.has_missing_packet() and not self.__curr_message_info_printed:
                 self.__curr_message_info_printed = True
                 self.handle_message()
+            time.sleep(1)
 
     def handle_keep_alive(self, seq_num):
         # Respond with a keep-alive message
